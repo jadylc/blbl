@@ -97,4 +97,5 @@
     <string name="player_comment_load_failed">加载失败</string>
     <string name="player_comment_no_aid">未获取到 aid，暂不支持评论</string>
     <string name="player_comment_thread_root">原评论</string>
+    <string name="player_comment_expand">展开</string>
 </resources>

@@ -223,6 +223,7 @@
     <dimen name="player_comment_time_text_size">12sp</dimen>
     <dimen name="player_comment_message_margin_top">6dp</dimen>
     <dimen name="player_comment_message_text_size">14sp</dimen>
+    <dimen name="player_comment_expand_padding_top">4dp</dimen>
 
     <dimen name="player_comment_pictures_margin_top">8dp</dimen>
     <dimen name="player_comment_picture_width">96dp</dimen>

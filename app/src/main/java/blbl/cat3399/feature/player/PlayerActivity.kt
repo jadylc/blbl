@@ -90,6 +90,7 @@ class PlayerActivity : BaseActivity() {
     internal lateinit var binding: ActivityPlayerBinding
     internal var player: ExoPlayer? = null
     internal val sidePanelFocusReturn = FocusReturn()
+    internal val commentImageViewerFocusReturn = FocusReturn()
     internal var debugJob: kotlinx.coroutines.Job? = null
     internal val debug = PlayerDebugMetrics()
     internal var progressJob: kotlinx.coroutines.Job? = null
@@ -130,6 +131,9 @@ class PlayerActivity : BaseActivity() {
     internal var commentsTotalCount: Int = -1
     internal var commentsEndReached: Boolean = false
     internal val commentsItems: ArrayList<PlayerCommentsAdapter.Item> = ArrayList()
+    internal val expandedCommentRpids: HashSet<Long> = HashSet()
+    internal var commentImageViewerUrls: List<String> = emptyList()
+    internal var commentImageViewerIndex: Int = 0
 
     internal var commentThreadRootRpid: Long = 0L
     internal var commentThreadReturnFocusRpid: Long = 0L
@@ -814,6 +818,7 @@ class PlayerActivity : BaseActivity() {
         refreshSettings(settingsAdapter)
         updateDebugOverlay()
         initSidePanels()
+        initCommentImageViewer()
         initBottomCardPanel()
 
         initControls(exo)
@@ -1064,6 +1069,8 @@ class PlayerActivity : BaseActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
+
+        if (dispatchCommentImageViewerKey(event)) return true
 
         // PlayerActivity has extensive global key shortcuts (including BACK/LEFT-as-back).
         // When a modal popup is showing, bypass these shortcuts and let the popup consume keys first.

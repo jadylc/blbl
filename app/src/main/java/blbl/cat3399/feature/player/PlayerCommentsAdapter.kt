@@ -6,6 +6,7 @@ import android.text.style.ForegroundColorSpan
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 import blbl.cat3399.R
@@ -17,7 +18,9 @@ import blbl.cat3399.core.util.Format
 import blbl.cat3399.databinding.ItemPlayerCommentBinding
 
 class PlayerCommentsAdapter(
+    private val expandedRpids: MutableSet<Long>,
     private val onClick: (Item) -> Unit,
+    private val onLongClick: (Item) -> Boolean = { false },
 ) : RecyclerView.Adapter<PlayerCommentsAdapter.Vh>() {
     data class ReplyPreview(
         val userName: String,
@@ -100,7 +103,20 @@ class PlayerCommentsAdapter(
     override fun onBindViewHolder(holder: Vh, position: Int) {
         val item = items[position]
         maybeRequestNotePictures(item)
-        holder.bind(item, onClick)
+        holder.bind(
+            item = item,
+            isExpanded = expandedRpids.contains(item.rpid),
+            onExpand = { rpid ->
+                if (!expandedRpids.add(rpid)) return@bind
+                val pos =
+                    holder.bindingAdapterPosition
+                        .takeIf { it != RecyclerView.NO_POSITION }
+                        ?: position
+                notifyItemChanged(pos)
+            },
+            onClick = onClick,
+            onLongClick = onLongClick,
+        )
     }
 
     private fun maybeRequestNotePictures(item: Item) {
@@ -113,7 +129,16 @@ class PlayerCommentsAdapter(
     }
 
     class Vh(private val binding: ItemPlayerCommentBinding) : RecyclerView.ViewHolder(binding.root) {
-        fun bind(item: Item, onClick: (Item) -> Unit) {
+        private var boundRpid: Long = 0L
+
+        fun bind(
+            item: Item,
+            isExpanded: Boolean,
+            onExpand: (Long) -> Unit,
+            onClick: (Item) -> Unit,
+            onLongClick: (Item) -> Boolean,
+        ) {
+            boundRpid = item.rpid
             val ctx = binding.root.context
             val previewUserColor = ContextCompat.getColor(ctx, R.color.blbl_blue)
             binding.root.setCardBackgroundColor(
@@ -129,8 +154,10 @@ class PlayerCommentsAdapter(
             binding.tvUser.text = item.userName.ifBlank { "-" }
             binding.tvUpBadge.visibility = if (item.isUp) View.VISIBLE else View.GONE
             binding.tvTime.text = Format.pubDateText(item.ctimeSec)
+            binding.tvMessage.maxLines = if (isExpanded) Int.MAX_VALUE else 6
             val blankFallback = if (item.pictures.isNotEmpty() || item.noteCvid > 0L) "" else "-"
             EmoteSpannable.setText(binding.tvMessage, item.message, item.emotes, blankFallback = blankFallback)
+            updateExpandHint(itemRpid = item.rpid, isExpanded = isExpanded)
             bindPictures(item.pictures)
 
             run {
@@ -155,7 +182,13 @@ class PlayerCommentsAdapter(
 
             if (item.canOpenThread && item.replyCount > 0) {
                 val rc = Format.count(item.replyCount.toLong())
-                binding.tvReply.text = "查看全部 $rc 条回复"
+                val hasPictures = item.pictures.isNotEmpty() || item.noteCvid > 0L
+                binding.tvReply.text =
+                    if (hasPictures) {
+                        "长按查看全部 $rc 条回复"
+                    } else {
+                        "查看全部 $rc 条回复"
+                    }
                 binding.tvReply.visibility = View.VISIBLE
                 binding.rowMeta.visibility = View.VISIBLE
             } else {
@@ -166,7 +199,37 @@ class PlayerCommentsAdapter(
 
             ImageLoader.loadInto(binding.ivAvatar, item.avatarUrl)
 
-            binding.root.setOnClickListener { onClick(item) }
+            binding.root.setOnClickListener {
+                val shouldExpand = !isExpanded && isMessageEllipsized(binding.tvMessage)
+                if (shouldExpand) {
+                    onExpand(item.rpid)
+                } else {
+                    onClick(item)
+                }
+            }
+            binding.root.setOnLongClickListener {
+                onLongClick(item)
+            }
+        }
+
+        private fun updateExpandHint(itemRpid: Long, isExpanded: Boolean) {
+            binding.tvExpand.visibility = View.GONE
+            if (isExpanded) return
+
+            // Only show "展开" when we are actually ellipsized at runtime.
+            // Use post() to wait for the layout pass to finish.
+            binding.tvMessage.post {
+                if (boundRpid != itemRpid) return@post
+                val shouldShow = isMessageEllipsized(binding.tvMessage)
+                binding.tvExpand.visibility = if (shouldShow) View.VISIBLE else View.GONE
+            }
+        }
+
+        private fun isMessageEllipsized(view: TextView): Boolean {
+            val layout = view.layout ?: return false
+            val last = layout.lineCount - 1
+            if (last < 0) return false
+            return layout.getEllipsisCount(last) > 0
         }
 
         private fun bindPictures(pictures: List<String>) {

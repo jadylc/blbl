@@ -817,4 +817,93 @@
         </androidx.constraintlayout.widget.ConstraintLayout>
     </com.google.android.material.card.MaterialCardView>
 
+    <FrameLayout
+        android:id="@+id/comment_image_viewer"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/player_overlay_bg"
+        android:clickable="true"
+        android:defaultFocusHighlightEnabled="false"
+        android:elevation="20dp"
+        android:focusable="true"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/guideline_comment_image_left"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                app:layout_constraintGuide_percent="0.16666667" />
+
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/guideline_comment_image_right"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                app:layout_constraintGuide_percent="0.8333333" />
+
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/guideline_comment_image_top"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                app:layout_constraintGuide_percent="0.16666667" />
+
+            <androidx.constraintlayout.widget.Guideline
+                android:id="@+id/guideline_comment_image_bottom"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                app:layout_constraintGuide_percent="0.8333333" />
+
+            <ImageView
+                android:id="@+id/iv_comment_image"
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:contentDescription="@string/app_name"
+                android:scaleType="fitCenter"
+                app:layout_constraintBottom_toBottomOf="@id/guideline_comment_image_bottom"
+                app:layout_constraintEnd_toEndOf="@id/guideline_comment_image_right"
+                app:layout_constraintStart_toStartOf="@id/guideline_comment_image_left"
+                app:layout_constraintTop_toTopOf="@id/guideline_comment_image_top" />
+
+            <ImageView
+                android:id="@+id/iv_comment_image_prev"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginEnd="24dp"
+                android:alpha="0.7"
+                android:clickable="true"
+                android:contentDescription="@string/app_name"
+                android:src="@drawable/ic_chevron_left"
+                android:visibility="gone"
+                app:layout_constraintBottom_toBottomOf="@id/iv_comment_image"
+                app:layout_constraintEnd_toStartOf="@id/iv_comment_image"
+                app:layout_constraintTop_toTopOf="@id/iv_comment_image" />
+
+            <ImageView
+                android:id="@+id/iv_comment_image_next"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="24dp"
+                android:alpha="0.7"
+                android:clickable="true"
+                android:contentDescription="@string/app_name"
+                android:src="@drawable/ic_chevron_right"
+                android:visibility="gone"
+                app:layout_constraintBottom_toBottomOf="@id/iv_comment_image"
+                app:layout_constraintStart_toEndOf="@id/iv_comment_image"
+                app:layout_constraintTop_toTopOf="@id/iv_comment_image" />
+
+        </androidx.constraintlayout.widget.ConstraintLayout>
+    </FrameLayout>
+
 </androidx.constraintlayout.widget.ConstraintLayout>

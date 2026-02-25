@@ -8,6 +8,7 @@ import androidx.recyclerview.widget.RecyclerView
 import blbl.cat3399.R
 import blbl.cat3399.core.api.BiliApi
 import blbl.cat3399.core.api.BiliApiException
+import blbl.cat3399.core.note.NoteImageRepository
 import blbl.cat3399.core.ui.AppToast
 import blbl.cat3399.core.ui.DpadGridController
 import blbl.cat3399.core.ui.postIfAlive
@@ -45,15 +46,48 @@ internal fun PlayerActivity.initSidePanels() {
 
     run {
         val adapter =
-            PlayerCommentsAdapter { item ->
-                if (!isCommentsPanelVisible()) return@PlayerCommentsAdapter
-                if (isCommentThreadVisible()) return@PlayerCommentsAdapter
-                if (item.replyCount <= 0) {
-                    AppToast.show(this, "暂无更多回复")
-                    return@PlayerCommentsAdapter
-                }
-                openCommentThread(rootRpid = item.rpid)
-            }
+            PlayerCommentsAdapter(
+                expandedRpids = expandedCommentRpids,
+                onClick = { item ->
+                    if (!isCommentsPanelVisible()) return@PlayerCommentsAdapter
+                    if (isCommentThreadVisible()) return@PlayerCommentsAdapter
+
+                    val hasPictures = item.pictures.isNotEmpty() || item.noteCvid > 0L
+                    if (hasPictures) {
+                        if (item.pictures.isNotEmpty()) {
+                            openCommentImageViewer(urls = item.pictures, startIndex = 0)
+                        } else {
+                            AppToast.show(this, "加载图片中…")
+                            NoteImageRepository.load(item.noteCvid) { urls ->
+                                if (!isCommentsPanelVisible() || isCommentThreadVisible()) return@load
+                                if (urls.isEmpty()) return@load
+                                openCommentImageViewer(urls = urls, startIndex = 0)
+                            }
+                        }
+                        return@PlayerCommentsAdapter
+                    }
+
+                    if (item.replyCount <= 0) {
+                        AppToast.show(this, "暂无更多回复")
+                        return@PlayerCommentsAdapter
+                    }
+                    openCommentThread(rootRpid = item.rpid)
+                },
+                onLongClick = { item ->
+                    if (!isCommentsPanelVisible()) return@PlayerCommentsAdapter false
+                    if (isCommentThreadVisible()) return@PlayerCommentsAdapter false
+
+                    val hasPictures = item.pictures.isNotEmpty() || item.noteCvid > 0L
+                    if (!hasPictures) return@PlayerCommentsAdapter false
+
+                    if (item.replyCount <= 0) {
+                        AppToast.show(this, "暂无更多回复")
+                        return@PlayerCommentsAdapter true
+                    }
+                    openCommentThread(rootRpid = item.rpid)
+                    true
+                },
+            )
         binding.recyclerComments.adapter = adapter
         binding.recyclerComments.layoutManager = LinearLayoutManager(this)
         binding.recyclerComments.clearOnScrollListeners()
@@ -76,7 +110,28 @@ internal fun PlayerActivity.initSidePanels() {
     }
 
     run {
-        val adapter = PlayerCommentsAdapter { }
+        val adapter =
+            PlayerCommentsAdapter(
+                expandedRpids = expandedCommentRpids,
+                onClick = { item ->
+                    if (!isCommentsPanelVisible()) return@PlayerCommentsAdapter
+                    if (!isCommentThreadVisible()) return@PlayerCommentsAdapter
+
+                    val hasPictures = item.pictures.isNotEmpty() || item.noteCvid > 0L
+                    if (!hasPictures) return@PlayerCommentsAdapter
+
+                    if (item.pictures.isNotEmpty()) {
+                        openCommentImageViewer(urls = item.pictures, startIndex = 0)
+                    } else {
+                        AppToast.show(this, "加载图片中…")
+                        NoteImageRepository.load(item.noteCvid) { urls ->
+                            if (!isCommentsPanelVisible() || !isCommentThreadVisible()) return@load
+                            if (urls.isEmpty()) return@load
+                            openCommentImageViewer(urls = urls, startIndex = 0)
+                        }
+                    }
+                },
+            )
         binding.recyclerCommentThread.adapter = adapter
         binding.recyclerCommentThread.layoutManager = LinearLayoutManager(this)
         binding.recyclerCommentThread.clearOnScrollListeners()
@@ -128,6 +183,7 @@ internal fun PlayerActivity.initSidePanels() {
                             isCommentsPanelVisible() &&
                             !isCommentThreadVisible()
                     },
+                    enableCenterLongPressToLongClick = true,
                 ),
         ).also { it.install() }
 
@@ -156,6 +212,7 @@ internal fun PlayerActivity.initSidePanels() {
                             isCommentsPanelVisible() &&
                             isCommentThreadVisible()
                     },
+                    enableCenterLongPressToLongClick = true,
                 ),
         ).also { it.install() }
 }
@@ -173,6 +230,12 @@ internal fun PlayerActivity.showSettingsPanel() {
     val enteringSidePanelMode = !isSidePanelVisible()
     if (enteringSidePanelMode) {
         sidePanelFocusReturn.capture(currentFocus)
+    }
+    if (isCommentsPanelVisible()) {
+        closeCommentImageViewer(restoreFocus = false)
+        expandedCommentRpids.clear()
+        (binding.recyclerComments.adapter as? PlayerCommentsAdapter)?.invalidateSizing()
+        (binding.recyclerCommentThread.adapter as? PlayerCommentsAdapter)?.invalidateSizing()
     }
     binding.commentsPanel.visibility = View.GONE
     // Make sure OSD (top/bottom bars) is visible first, so the panel height stays stable
@@ -214,8 +277,12 @@ internal fun PlayerActivity.showCommentsPanel() {
 
 internal fun PlayerActivity.hideCommentsPanel() {
     setControlsVisible(true)
+    closeCommentImageViewer(restoreFocus = false)
     // Restore focus before hiding the panel to avoid a brief focus jump to an unrelated control.
     sidePanelFocusReturn.restoreAndClear(fallback = binding.btnComments, postOnFail = false)
+    expandedCommentRpids.clear()
+    (binding.recyclerComments.adapter as? PlayerCommentsAdapter)?.invalidateSizing()
+    (binding.recyclerCommentThread.adapter as? PlayerCommentsAdapter)?.invalidateSizing()
     binding.commentsPanel.visibility = View.GONE
 }
 
@@ -252,6 +319,7 @@ internal fun PlayerActivity.showCommentsRoot() {
     binding.recyclerCommentThread.visibility = View.GONE
     binding.rowCommentSort.visibility = View.VISIBLE
     commentThreadRootRpid = 0L
+    (binding.recyclerComments.adapter as? PlayerCommentsAdapter)?.invalidateSizing()
 }
 
 internal fun PlayerActivity.openCommentThread(rootRpid: Long) {
@@ -261,6 +329,7 @@ internal fun PlayerActivity.openCommentThread(rootRpid: Long) {
     binding.recyclerComments.visibility = View.GONE
     binding.recyclerCommentThread.visibility = View.VISIBLE
     binding.rowCommentSort.visibility = View.GONE
+    (binding.recyclerCommentThread.adapter as? PlayerCommentsAdapter)?.invalidateSizing()
     reloadCommentThread()
     focusCommentThread()
 }
