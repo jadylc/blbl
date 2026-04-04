@@ -29,6 +29,7 @@ enum class SettingId(
     FullscreenEnabled("fullscreen_enabled"),
     TabSwitchFollowsFocus("tab_switch_follows_focus"),
     MainBackFocusScheme("main_back_focus_scheme"),
+    FollowingListOrder("following_list_order"),
 
     // 播放设置
     PlayerPreferredQn("player_preferred_qn"),
@@ -99,9 +100,6 @@ enum class SettingId(
     DeviceScreen("device_screen"),
     DeviceRam("device_ram"),
 
-    // 临时设置
-    FollowingListOrder("following_list_order"),
-    TemporaryPlaceholder("temporary_placeholder"),
 }
 
 data class SettingEntry(
