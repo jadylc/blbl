@@ -256,6 +256,87 @@
             app:layout_constraintTop_toTopOf="@id/btn_back" />
     </androidx.constraintlayout.widget.ConstraintLayout>
 
+    <LinearLayout
+        android:id="@+id/card_up_quick"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/player_up_quick_margin_start"
+        android:layout_marginTop="@dimen/player_up_quick_margin_top"
+        android:background="@drawable/bg_player_up_quick_card"
+        android:focusable="false"
+        android:focusableInTouchMode="false"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/player_up_quick_card_padding_h"
+        android:paddingTop="@dimen/player_up_quick_card_padding_v"
+        android:paddingEnd="@dimen/player_up_quick_card_padding_h"
+        android:paddingBottom="@dimen/player_up_quick_card_padding_v"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="@id/player_view"
+        app:layout_constraintTop_toBottomOf="@id/top_bar">
+
+        <LinearLayout
+            android:id="@+id/btn_up_quick_profile"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/player_up_quick_chip_height"
+            android:background="?attr/blblFocusBgRound"
+            android:clickable="true"
+            android:focusable="true"
+            android:focusableInTouchMode="false"
+            android:gravity="center_vertical"
+            android:nextFocusRight="@id/btn_up_quick_follow"
+            android:nextFocusUp="@id/btn_up_quick_profile"
+            android:nextFocusDown="@id/btn_touch_lock"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/player_up_quick_profile_padding_h"
+            android:paddingEnd="@dimen/player_up_quick_profile_padding_h"
+            android:stateListAnimator="@animator/blbl_focus_scale">
+
+            <com.google.android.material.imageview.ShapeableImageView
+                android:id="@+id/iv_up_quick_avatar"
+                android:layout_width="@dimen/player_up_quick_avatar_size"
+                android:layout_height="@dimen/player_up_quick_avatar_size"
+                android:contentDescription="@string/player_up_quick_open_profile"
+                android:src="@android:drawable/sym_def_app_icon"
+                app:shapeAppearanceOverlay="@style/ShapeAppearanceOverlay_Blbl_Circular"
+                app:strokeColor="#80FFFFFF"
+                app:strokeWidth="1dp" />
+
+            <TextView
+                android:id="@+id/tv_up_quick_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/player_up_quick_name_margin_start"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:maxWidth="@dimen/player_up_quick_name_max_width"
+                android:textColor="?attr/colorOnSurface"
+                android:textSize="@dimen/player_up_quick_name_text_size"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/btn_up_quick_follow"
+            android:layout_width="wrap_content"
+            android:layout_height="@dimen/player_up_quick_chip_height"
+            android:layout_marginStart="@dimen/player_up_quick_card_gap"
+            android:background="?attr/blblFocusBgRound"
+            android:clickable="true"
+            android:focusable="true"
+            android:focusableInTouchMode="false"
+            android:gravity="center"
+            android:minWidth="@dimen/player_up_quick_follow_min_width"
+            android:nextFocusLeft="@id/btn_up_quick_profile"
+            android:nextFocusUp="@id/btn_up_quick_follow"
+            android:nextFocusDown="@id/btn_touch_lock"
+            android:paddingStart="@dimen/player_up_quick_follow_padding_h"
+            android:paddingEnd="@dimen/player_up_quick_follow_padding_h"
+            android:stateListAnimator="@animator/blbl_focus_scale"
+            android:text="@string/player_up_quick_follow"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="@dimen/player_up_quick_follow_text_size" />
+    </LinearLayout>
+
     <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/bottom_bar"
         android:layout_width="0dp"
