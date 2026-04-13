@@ -649,12 +649,16 @@ class AppPrefs(context: Context) {
             if (!prefs.contains(KEY_PLAYER_OSD_BUTTONS)) return DEFAULT_PLAYER_OSD_BUTTONS
             val stored = loadStringList(KEY_PLAYER_OSD_BUTTONS)
             val normalized = normalizePlayerOsdButtons(stored)
-            return migratePlayerOsdDetailButtonIfNeeded(normalized)
+            val withDetail = migratePlayerOsdDetailButtonIfNeeded(normalized)
+            return migratePlayerOsdSocialButtonsIfNeeded(withDetail)
         }
         set(value) {
             saveStringList(KEY_PLAYER_OSD_BUTTONS, normalizePlayerOsdButtons(value))
             // Once user manually configures OSD buttons, never force-enable new buttons again.
-            prefs.edit().putBoolean(KEY_PLAYER_OSD_BUTTONS_DETAIL_MIGRATED, true).apply()
+            prefs.edit()
+                .putBoolean(KEY_PLAYER_OSD_BUTTONS_DETAIL_MIGRATED, true)
+                .putBoolean(KEY_PLAYER_OSD_BUTTONS_SOCIAL_ACTIONS_MIGRATED, true)
+                .apply()
         }
 
     internal var playerCustomShortcuts: List<PlayerCustomShortcut>
@@ -787,6 +791,26 @@ class AppPrefs(context: Context) {
         return migrated
     }
 
+    private fun migratePlayerOsdSocialButtonsIfNeeded(normalized: List<String>): List<String> {
+        if (prefs.getBoolean(KEY_PLAYER_OSD_BUTTONS_SOCIAL_ACTIONS_MIGRATED, false)) return normalized
+        // Requirement: expose Like/Coin/Fav directly in the player OSD so users do not need to
+        // enter the video detail page just to trigger these actions.
+        prefs.edit().putBoolean(KEY_PLAYER_OSD_BUTTONS_SOCIAL_ACTIONS_MIGRATED, true).apply()
+
+        val requiredButtons =
+            listOf(
+                PLAYER_OSD_BTN_LIKE,
+                PLAYER_OSD_BTN_COIN,
+                PLAYER_OSD_BTN_FAV,
+            )
+        val missing = requiredButtons.filterNot(normalized::contains)
+        if (missing.isEmpty()) return normalized
+
+        val migrated = normalized + missing
+        saveStringList(KEY_PLAYER_OSD_BUTTONS, migrated)
+        return migrated
+    }
+
     private fun normalizePlayerOsdButtons(value: List<String>): List<String> {
         val out = ArrayList<String>(value.size + 1)
         val seen = HashSet<String>(value.size + 1)
@@ -912,6 +936,7 @@ class AppPrefs(context: Context) {
         private const val KEY_PLAYER_PLAYBACK_MODE = "player_playback_mode"
         private const val KEY_PLAYER_OSD_BUTTONS = "player_osd_buttons"
         private const val KEY_PLAYER_OSD_BUTTONS_DETAIL_MIGRATED = "player_osd_buttons_detail_migrated"
+        private const val KEY_PLAYER_OSD_BUTTONS_SOCIAL_ACTIONS_MIGRATED = "player_osd_buttons_social_actions_migrated"
         private const val KEY_PLAYER_CUSTOM_SHORTCUTS = "player_custom_shortcuts"
         private const val KEY_GRID_SPAN = "grid_span"
         private const val KEY_DYNAMIC_GRID_SPAN = "dynamic_grid_span"
@@ -1005,6 +1030,9 @@ class AppPrefs(context: Context) {
                 PLAYER_OSD_BTN_COMMENTS,
                 PLAYER_OSD_BTN_DETAIL,
                 PLAYER_OSD_BTN_UP,
+                PLAYER_OSD_BTN_LIKE,
+                PLAYER_OSD_BTN_COIN,
+                PLAYER_OSD_BTN_FAV,
                 PLAYER_OSD_BTN_LIST_PANEL,
                 PLAYER_OSD_BTN_ADVANCED,
             )

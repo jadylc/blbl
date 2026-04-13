@@ -1,6 +1,9 @@
 name: Android Release
 
 on:
+  push:
+    branches:
+      - '**'
   workflow_dispatch:
     inputs:
       version_name:
@@ -14,11 +17,45 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-release-${{ github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Compute release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION_NAME="${{ inputs.version_name }}"
+            CLEAN_VERSION="${VERSION_NAME#v}"
+            RELEASE_TAG="v${CLEAN_VERSION}"
+            RELEASE_NAME="${RELEASE_TAG}"
+            RELEASE_MODE="versioned"
+            ASSET_NAME="blbl-android-${CLEAN_VERSION}-release.apk"
+          else
+            SHORT_SHA="${GITHUB_SHA::7}"
+            SAFE_REF_NAME="$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')"
+            VERSION_NAME="${SAFE_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+            RELEASE_TAG="snapshot-${SAFE_REF_NAME}"
+            RELEASE_NAME="${GITHUB_REF_NAME} Snapshot"
+            RELEASE_MODE="snapshot"
+            ASSET_NAME="blbl-android-${SAFE_REF_NAME}-snapshot-release.apk"
+          fi
+
+          {
+            echo "version_name=${VERSION_NAME}"
+            echo "release_tag=${RELEASE_TAG}"
+            echo "release_name=${RELEASE_NAME}"
+            echo "release_mode=${RELEASE_MODE}"
+            echo "asset_name=${ASSET_NAME}"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with:
           distribution: "temurin"
@@ -35,7 +72,7 @@ jobs:
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease -PversionName=${{ inputs.version_name }} -PversionCode=${{ github.run_number }}
+        run: ./gradlew assembleRelease -PversionName=${{ steps.meta.outputs.version_name }} -PversionCode=${{ github.run_number }}
       - name: Upload release APK to R2 (optional)
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -43,7 +80,7 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || vars.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET || vars.R2_BUCKET }}
           R2_PREFIX: ${{ vars.R2_PREFIX || secrets.R2_PREFIX }}
-          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
         run: |
           set -euo pipefail
           if [ -z "${R2_ACCESS_KEY_ID:-}" ] || [ -z "${R2_SECRET_ACCESS_KEY:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
@@ -81,21 +118,43 @@ jobs:
       - name: Publish release APK to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION_NAME: ${{ inputs.version_name }}
-          RELEASE_TAG: ${{ startsWith(inputs.version_name, 'v') && inputs.version_name || format('v{0}', inputs.version_name) }}
-          CHANGELOG: ${{ inputs.changelog }}
+          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_NAME: ${{ steps.meta.outputs.release_name }}
+          RELEASE_MODE: ${{ steps.meta.outputs.release_mode }}
+          ASSET_NAME: ${{ steps.meta.outputs.asset_name }}
+          CHANGELOG: ${{ github.event.inputs.changelog || '' }}
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            if [ -n "${CHANGELOG:-}" ]; then
-              printf '%s' "$CHANGELOG" > changelog.md
-              gh release edit "$RELEASE_TAG" --notes-file changelog.md
-            fi
+          set -euo pipefail
+
+          if [ "${RELEASE_MODE}" = "snapshot" ]; then
+            gh release delete "$RELEASE_TAG" --yes >/dev/null 2>&1 || true
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${RELEASE_TAG}" >/dev/null 2>&1 || true
+
+            printf '%s\n\n%s\n\n%s\n' \
+              "自动构建分支：${GITHUB_REF_NAME}" \
+              "提交：${GITHUB_SHA}" \
+              "运行记录：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              > changelog.md
+
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_NAME" \
+              --notes-file changelog.md \
+              --target "$GITHUB_SHA" \
+              --prerelease
           else
-            if [ -n "${CHANGELOG:-}" ]; then
-              printf '%s' "$CHANGELOG" > changelog.md
-              gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file changelog.md --target "$GITHUB_SHA"
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              if [ -n "${CHANGELOG:-}" ]; then
+                printf '%s' "$CHANGELOG" > changelog.md
+                gh release edit "$RELEASE_TAG" --notes-file changelog.md
+              fi
             else
-              gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --target "$GITHUB_SHA"
+              if [ -n "${CHANGELOG:-}" ]; then
+                printf '%s' "$CHANGELOG" > changelog.md
+                gh release create "$RELEASE_TAG" --title "$RELEASE_NAME" --notes-file changelog.md --target "$GITHUB_SHA"
+              else
+                gh release create "$RELEASE_TAG" --title "$RELEASE_NAME" --generate-notes --target "$GITHUB_SHA"
+              fi
             fi
           fi
-          gh release upload "$RELEASE_TAG" "app/build/outputs/apk/release/app-release.apk#blbl-android-${VERSION_NAME}-release.apk" --clobber
+          gh release upload "$RELEASE_TAG" "app/build/outputs/apk/release/app-release.apk#${ASSET_NAME}" --clobber
