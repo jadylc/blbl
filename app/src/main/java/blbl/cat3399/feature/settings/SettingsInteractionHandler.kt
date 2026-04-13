@@ -1451,11 +1451,19 @@ class SettingsInteractionHandler(
                 }
             }
 
-            SettingId.ProjectUrl -> showProjectDialog()
-
-            SettingId.QqGroup -> {
-                copyToClipboard(label = "QQ交流群", text = SettingsConstants.QQ_GROUP, toastText = "已复制群号：${SettingsConstants.QQ_GROUP}")
+            SettingId.AppPackage -> {
+                copyToClipboard(
+                    label = "应用包名",
+                    text = BuildConfig.APPLICATION_ID,
+                    toastText = "已复制包名：${BuildConfig.APPLICATION_ID}",
+                )
             }
+
+            SettingId.ProjectUrl -> showUrlDialog(title = "Fork 仓库", url = SettingsConstants.PROJECT_URL)
+
+            SettingId.MaintainerUrl -> showUrlDialog(title = "维护者主页", url = SettingsConstants.MAINTAINER_URL)
+
+            SettingId.UpstreamProject -> showUrlDialog(title = "上游仓库", url = SettingsConstants.UPSTREAM_PROJECT_URL)
 
             SettingId.CheckUpdate -> {
                 when (val checkState = state.testUpdateCheckState) {
@@ -2472,7 +2480,8 @@ class SettingsInteractionHandler(
             activity.lifecycleScope.launch {
                 try {
                     val currentVersion = BuildConfig.VERSION_NAME
-                    val latestVersion = latestVersionHint ?: ApkUpdater.fetchLatestVersionName()
+                    val releaseInfo = ApkUpdater.fetchLatestReleaseInfo()
+                    val latestVersion = latestVersionHint ?: releaseInfo.versionName
                     if (!ApkUpdater.isRemoteNewer(latestVersion, currentVersion)) {
                         state.testUpdateCheckState = TestUpdateCheckState.Latest(latestVersion)
                         state.testUpdateCheckedAtMs = System.currentTimeMillis()
@@ -2493,7 +2502,7 @@ class SettingsInteractionHandler(
                     val apkFile =
                         ApkUpdater.downloadApkToCache(
                             context = activity,
-                            url = ApkUpdater.TEST_APK_URL,
+                            url = releaseInfo.downloadUrl,
                         ) { dlState ->
                             when (dlState) {
                                 ApkUpdater.Progress.Connecting -> {
@@ -2529,25 +2538,28 @@ class SettingsInteractionHandler(
             }
     }
 
-    private fun showProjectDialog() {
+    private fun showUrlDialog(
+        title: String,
+        url: String,
+    ) {
         AppPopup.custom(
             context = activity,
-            title = "项目地址",
+            title = title,
             cancelable = true,
             actions =
                 listOf(
                     PopupAction(role = PopupActionRole.NEGATIVE, text = "关闭"),
                     PopupAction(role = PopupActionRole.NEUTRAL, text = "复制") {
-                        copyToClipboard(label = "项目地址", text = SettingsConstants.PROJECT_URL, toastText = "已复制项目地址")
+                        copyToClipboard(label = title, text = url, toastText = "已复制：$url")
                     },
-                    PopupAction(role = PopupActionRole.POSITIVE, text = "打开") { openUrl(SettingsConstants.PROJECT_URL) },
+                    PopupAction(role = PopupActionRole.POSITIVE, text = "打开") { openUrl(url) },
                 ),
             preferredActionRole = PopupActionRole.POSITIVE,
             content = { dialogContext ->
                 val tv =
                     android.view.LayoutInflater.from(dialogContext)
                         .inflate(blbl.cat3399.R.layout.view_popup_message, null, false) as TextView
-                tv.text = SettingsConstants.PROJECT_URL
+                tv.text = url
                 tv
             },
         )

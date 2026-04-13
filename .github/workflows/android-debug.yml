@@ -19,6 +19,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Compute debug metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_NAME="${{ inputs.version_name }}"
+          CLEAN_VERSION="${VERSION_NAME#v}"
+          APK_FILE_NAME="blbl-${CLEAN_VERSION}-debug.apk"
+          ARTIFACT_NAME="blbl-${CLEAN_VERSION}-debug"
+          RELEASE_TAG="v${CLEAN_VERSION}"
+          RELEASE_NAME="${RELEASE_TAG}"
+          {
+            echo "version_name=${VERSION_NAME}"
+            echo "clean_version=${CLEAN_VERSION}"
+            echo "apk_file_name=${APK_FILE_NAME}"
+            echo "artifact_name=${ARTIFACT_NAME}"
+            echo "release_tag=${RELEASE_TAG}"
+            echo "release_name=${RELEASE_NAME}"
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with:
           distribution: "temurin"
@@ -27,7 +46,7 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
       - name: Build debug APK
-        run: ./gradlew assembleDebug -PversionName=${{ inputs.version_name }} -PversionCode=${{ github.run_number }}
+        run: ./gradlew assembleDebug -PversionName=${{ steps.meta.outputs.clean_version }} -PversionCode=${{ github.run_number }}
       - name: Upload debug APK to R2 (optional)
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -35,7 +54,8 @@ jobs:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || vars.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET || vars.R2_BUCKET }}
           R2_PREFIX: ${{ vars.R2_PREFIX || secrets.R2_PREFIX }}
-          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_NAME: ${{ steps.meta.outputs.clean_version }}
+          APK_FILE_NAME: ${{ steps.meta.outputs.apk_file_name }}
         run: |
           set -euo pipefail
           if [ -z "${R2_ACCESS_KEY_ID:-}" ] || [ -z "${R2_SECRET_ACCESS_KEY:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
@@ -54,28 +74,29 @@ jobs:
           export AWS_EC2_METADATA_DISABLED=true
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-          CLEAN_VERSION="${VERSION_NAME#v}"
           KEY_PREFIX="${R2_PREFIX:-blbl}"
           KEY_PREFIX="${KEY_PREFIX%/}"
           if [ -n "${KEY_PREFIX}" ]; then
             KEY_PREFIX="${KEY_PREFIX}/"
           fi
 
-          printf '%s' "${CLEAN_VERSION}" > version
+          APK_PATH="app/build/outputs/apk/debug/${APK_FILE_NAME}"
+          printf '%s' "${VERSION_NAME}" > version
           aws s3 cp "version" "s3://${R2_BUCKET}/${KEY_PREFIX}version" --endpoint-url "${ENDPOINT}" --content-type "text/plain" --cache-control "no-cache"
-          aws s3 cp "app/build/outputs/apk/debug/app-debug.apk" "s3://${R2_BUCKET}/${KEY_PREFIX}blbl-${CLEAN_VERSION}-debug.apk" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive"
-          aws s3 cp "app/build/outputs/apk/debug/app-debug.apk" "s3://${R2_BUCKET}/${KEY_PREFIX}blbl-latest-debug.apk" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive" --cache-control "no-cache"
+          aws s3 cp "${APK_PATH}" "s3://${R2_BUCKET}/${KEY_PREFIX}${APK_FILE_NAME}" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive"
+          aws s3 cp "${APK_PATH}" "s3://${R2_BUCKET}/${KEY_PREFIX}blbl-latest-debug.apk" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive" --cache-control "no-cache"
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: app/build/outputs/apk/debug/${{ steps.meta.outputs.apk_file_name }}
       - name: Publish debug APK to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION_NAME: ${{ inputs.version_name }}
-          RELEASE_TAG: ${{ startsWith(inputs.version_name, 'v') && inputs.version_name || format('v{0}', inputs.version_name) }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          RELEASE_NAME: ${{ steps.meta.outputs.release_name }}
           CHANGELOG: ${{ inputs.changelog }}
+          APK_FILE_NAME: ${{ steps.meta.outputs.apk_file_name }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             if [ -n "${CHANGELOG:-}" ]; then
@@ -85,9 +106,9 @@ jobs:
           else
             if [ -n "${CHANGELOG:-}" ]; then
               printf '%s' "$CHANGELOG" > changelog.md
-              gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file changelog.md --target "$GITHUB_SHA"
+              gh release create "$RELEASE_TAG" --title "$RELEASE_NAME" --notes-file changelog.md --target "$GITHUB_SHA"
             else
-              gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --generate-notes --target "$GITHUB_SHA"
+              gh release create "$RELEASE_TAG" --title "$RELEASE_NAME" --generate-notes --target "$GITHUB_SHA"
             fi
           fi
-          gh release upload "$RELEASE_TAG" "app/build/outputs/apk/debug/app-debug.apk#blbl-android-${VERSION_NAME}-debug.apk" --clobber
+          gh release upload "$RELEASE_TAG" "app/build/outputs/apk/debug/${APK_FILE_NAME}" --clobber

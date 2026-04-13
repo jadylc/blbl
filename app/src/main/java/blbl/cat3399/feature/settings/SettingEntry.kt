@@ -85,7 +85,10 @@ enum class SettingId(
 
     // 关于应用
     AppVersion("app_version"),
+    AppPackage("app_package"),
     ProjectUrl("project_url"),
+    MaintainerUrl("maintainer_url"),
+    UpstreamProject("upstream_project"),
     QqGroup("qq_group"),
     LogTag("log_tag"),
     ExportLogs("export_logs"),

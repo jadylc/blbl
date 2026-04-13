@@ -8,7 +8,8 @@ on:
     inputs:
       version_name:
         description: "Version name (e.g. 0.1.1)"
-        required: true
+        required: false
+        default: ""
       changelog:
         description: "Release notes/changelog (optional; supports multiline)"
         required: false
@@ -32,21 +33,42 @@ jobs:
         run: |
           set -euo pipefail
 
+          VERSION_NAME_BASE="$(grep '^VERSION_NAME_BASE=' gradle.properties | head -n1 | cut -d= -f2- | tr -d '\r' | xargs || true)"
+          VERSION_NAME_BASE="${VERSION_NAME_BASE:-0.1.0}"
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION_NAME="${{ inputs.version_name }}"
-            CLEAN_VERSION="${VERSION_NAME#v}"
+            INPUT_VERSION="${{ inputs.version_name }}"
+            if [ -n "${INPUT_VERSION}" ]; then
+              VERSION_NAME="${INPUT_VERSION#v}"
+            else
+              VERSION_NAME="${VERSION_NAME_BASE}.${GITHUB_RUN_NUMBER}"
+            fi
+            CLEAN_VERSION="${VERSION_NAME}"
             RELEASE_TAG="v${CLEAN_VERSION}"
             RELEASE_NAME="${RELEASE_TAG}"
             RELEASE_MODE="versioned"
-            ASSET_NAME="blbl-android-${CLEAN_VERSION}-release.apk"
+            APK_FILE_NAME="blbl-${CLEAN_VERSION}-release.apk"
+            ARTIFACT_NAME="blbl-${CLEAN_VERSION}-release"
+            PUBLISH_STABLE_R2="true"
+          elif [ "${GITHUB_REF_NAME}" = "main" ]; then
+            VERSION_NAME="${VERSION_NAME_BASE}.${GITHUB_RUN_NUMBER}"
+            CLEAN_VERSION="${VERSION_NAME}"
+            RELEASE_TAG="v${CLEAN_VERSION}"
+            RELEASE_NAME="${RELEASE_TAG}"
+            RELEASE_MODE="versioned"
+            APK_FILE_NAME="blbl-${CLEAN_VERSION}-release.apk"
+            ARTIFACT_NAME="blbl-${CLEAN_VERSION}-release"
+            PUBLISH_STABLE_R2="true"
           else
             SHORT_SHA="${GITHUB_SHA::7}"
             SAFE_REF_NAME="$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')"
-            VERSION_NAME="${SAFE_REF_NAME}-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
+            VERSION_NAME="${VERSION_NAME_BASE}.${GITHUB_RUN_NUMBER}-${SAFE_REF_NAME}-${SHORT_SHA}"
             RELEASE_TAG="snapshot-${SAFE_REF_NAME}"
             RELEASE_NAME="${GITHUB_REF_NAME} Snapshot"
             RELEASE_MODE="snapshot"
-            ASSET_NAME="blbl-android-${SAFE_REF_NAME}-snapshot-release.apk"
+            APK_FILE_NAME="blbl-${VERSION_NAME}-release.apk"
+            ARTIFACT_NAME="blbl-${SAFE_REF_NAME}-snapshot-release"
+            PUBLISH_STABLE_R2="false"
           fi
 
           {
@@ -54,13 +76,32 @@ jobs:
             echo "release_tag=${RELEASE_TAG}"
             echo "release_name=${RELEASE_NAME}"
             echo "release_mode=${RELEASE_MODE}"
-            echo "asset_name=${ASSET_NAME}"
+            echo "apk_file_name=${APK_FILE_NAME}"
+            echo "artifact_name=${ARTIFACT_NAME}"
+            echo "publish_stable_r2=${PUBLISH_STABLE_R2}"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
           cache: "gradle"
+      - name: Validate release signing secrets
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${RELEASE_KEYSTORE_BASE64:-}" ] || missing+=("RELEASE_KEYSTORE_BASE64")
+          [ -n "${RELEASE_STORE_PASSWORD:-}" ] || missing+=("RELEASE_STORE_PASSWORD")
+          [ -n "${RELEASE_KEY_ALIAS:-}" ] || missing+=("RELEASE_KEY_ALIAS")
+          [ -n "${RELEASE_KEY_PASSWORD:-}" ] || missing+=("RELEASE_KEY_PASSWORD")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing required signing secrets: ${missing[*]}" >&2
+            exit 1
+          fi
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
       - name: Decode keystore
@@ -81,10 +122,16 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET || vars.R2_BUCKET }}
           R2_PREFIX: ${{ vars.R2_PREFIX || secrets.R2_PREFIX }}
           VERSION_NAME: ${{ steps.meta.outputs.version_name }}
+          APK_FILE_NAME: ${{ steps.meta.outputs.apk_file_name }}
+          PUBLISH_STABLE_R2: ${{ steps.meta.outputs.publish_stable_r2 }}
         run: |
           set -euo pipefail
           if [ -z "${R2_ACCESS_KEY_ID:-}" ] || [ -z "${R2_SECRET_ACCESS_KEY:-}" ] || [ -z "${R2_ACCOUNT_ID:-}" ] || [ -z "${R2_BUCKET:-}" ]; then
             echo "R2 variables not set, skipping upload."
+            exit 0
+          fi
+          if [ "${PUBLISH_STABLE_R2}" != "true" ]; then
+            echo "Snapshot build, skipping R2 stable release publish."
             exit 0
           fi
           if ! command -v aws >/dev/null 2>&1; then
@@ -106,23 +153,23 @@ jobs:
             KEY_PREFIX="${KEY_PREFIX}/"
           fi
 
+          APK_PATH="app/build/outputs/apk/release/${APK_FILE_NAME}"
           printf '%s' "${CLEAN_VERSION}" > version
           aws s3 cp "version" "s3://${R2_BUCKET}/${KEY_PREFIX}version" --endpoint-url "${ENDPOINT}" --content-type "text/plain" --cache-control "no-cache"
-          aws s3 cp "app/build/outputs/apk/release/app-release.apk" "s3://${R2_BUCKET}/${KEY_PREFIX}blbl-${CLEAN_VERSION}-release.apk" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive"
-          aws s3 cp "app/build/outputs/apk/release/app-release.apk" "s3://${R2_BUCKET}/${KEY_PREFIX}blbl-latest-release.apk" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive" --cache-control "no-cache"
+          aws s3 cp "${APK_PATH}" "s3://${R2_BUCKET}/${KEY_PREFIX}${APK_FILE_NAME}" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive"
+          aws s3 cp "${APK_PATH}" "s3://${R2_BUCKET}/${KEY_PREFIX}blbl-latest-release.apk" --endpoint-url "${ENDPOINT}" --content-type "application/vnd.android.package-archive" --cache-control "no-cache"
       - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
-          path: app/build/outputs/apk/release/app-release.apk
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: app/build/outputs/apk/release/${{ steps.meta.outputs.apk_file_name }}
       - name: Publish release APK to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
           RELEASE_NAME: ${{ steps.meta.outputs.release_name }}
           RELEASE_MODE: ${{ steps.meta.outputs.release_mode }}
-          ASSET_NAME: ${{ steps.meta.outputs.asset_name }}
+          APK_FILE_NAME: ${{ steps.meta.outputs.apk_file_name }}
           CHANGELOG: ${{ github.event.inputs.changelog || '' }}
         run: |
           set -euo pipefail
@@ -157,4 +204,4 @@ jobs:
               fi
             fi
           fi
-          gh release upload "$RELEASE_TAG" "app/build/outputs/apk/release/app-release.apk#${ASSET_NAME}" --clobber
+          gh release upload "$RELEASE_TAG" "app/build/outputs/apk/release/${APK_FILE_NAME}" --clobber

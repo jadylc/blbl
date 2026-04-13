@@ -7,6 +7,7 @@ plugins {
 android {
     namespace = "blbl.cat3399"
     compileSdk = 36
+    val versionNameBase = (project.findProperty("VERSION_NAME_BASE") as String?)?.trim().orEmpty().ifBlank { "0.1.0" }
 
     fun propOrEnv(name: String): String? {
         val fromProp = project.findProperty(name) as String?
@@ -17,11 +18,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "blbl.cat3399"
+        applicationId = "io.github.jadylc.blbl"
         minSdk = 21
         targetSdk = 36
         versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
-        versionName = project.findProperty("versionName") as String? ?: "0.1.0"
+        versionName = (project.findProperty("versionName") as String?)?.trim().takeUnless { it.isNullOrBlank() } ?: versionNameBase
 
         vectorDrawables {
             useSupportLibrary = true
@@ -203,4 +204,14 @@ val checkThemeTokens =
 
 tasks.named("preBuild").configure {
     dependsOn(checkThemeTokens)
+}
+
+android.applicationVariants.configureEach {
+    outputs.configureEach {
+        val apkOutput = this as? com.android.build.gradle.internal.api.ApkVariantOutputImpl
+        val normalizedVersionName = (versionName ?: "0.1.0").removePrefix("v").ifBlank { "0.1.0" }
+        if (apkOutput != null) {
+            apkOutput.outputFileName = "blbl-${normalizedVersionName}-${buildType.name}.apk"
+        }
+    }
 }

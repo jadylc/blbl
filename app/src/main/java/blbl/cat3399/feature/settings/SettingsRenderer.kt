@@ -376,8 +376,15 @@ class SettingsRenderer(
             "关于应用" ->
                 listOf(
                     SettingEntry(SettingId.AppVersion, "版本", BuildConfig.VERSION_NAME, null),
-                    SettingEntry(SettingId.ProjectUrl, "项目地址", SettingsConstants.PROJECT_URL, null),
-                    SettingEntry(SettingId.QqGroup, "QQ交流群", SettingsConstants.QQ_GROUP, null),
+                    SettingEntry(SettingId.AppPackage, "包名", BuildConfig.APPLICATION_ID, "Fork 版独立安装标识"),
+                    SettingEntry(SettingId.ProjectUrl, "Fork 仓库", SettingsConstants.PROJECT_LABEL, SettingsConstants.PROJECT_URL),
+                    SettingEntry(SettingId.MaintainerUrl, "维护者", SettingsConstants.MAINTAINER_LABEL, SettingsConstants.MAINTAINER_URL),
+                    SettingEntry(
+                        SettingId.UpstreamProject,
+                        "上游仓库",
+                        SettingsConstants.UPSTREAM_PROJECT_LABEL,
+                        SettingsConstants.UPSTREAM_PROJECT_URL,
+                    ),
                     SettingEntry(SettingId.LogTag, "日志标签", "BLBL", "用于 Logcat 过滤"),
                     SettingEntry(SettingId.ExportLogs, "导出日志", "保存文件", null),
                     SettingEntry(SettingId.UploadLogs, "上传日志", "点击上传", "打包并上传日志zip到开发者（含设备/版本等元数据）"),
@@ -465,10 +472,10 @@ class SettingsRenderer(
     private fun aboutUpdateEntry(): SettingEntry {
         val currentVersion = BuildConfig.VERSION_NAME
         val title = "检查更新"
-        val defaultDesc = "检查新版本并下载安装"
+        val defaultDesc = "检查当前 fork 仓库最新 Release 并下载安装"
         return when (val checkState = state.testUpdateCheckState) {
             TestUpdateCheckState.Idle -> SettingEntry(SettingId.CheckUpdate, title, "点击检查", defaultDesc)
-            TestUpdateCheckState.Checking -> SettingEntry(SettingId.CheckUpdate, title, "检查中…", "正在获取最新版本号…")
+            TestUpdateCheckState.Checking -> SettingEntry(SettingId.CheckUpdate, title, "检查中…", "正在获取 GitHub Release 信息…")
 
             is TestUpdateCheckState.Latest ->
                 SettingEntry(

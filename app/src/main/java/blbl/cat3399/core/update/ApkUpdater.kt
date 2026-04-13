@@ -20,14 +20,12 @@ import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
+import org.json.JSONObject
 
 object ApkUpdater {
-    private const val DEBUG_APK_URL = "https://cat3399.top/blbl/blbl-latest-debug.apk"
-    private const val RELEASE_APK_URL = "https://cat3399.top/blbl/blbl-latest-release.apk"
-    val TEST_APK_URL: String
-        get() = if (BuildConfig.DEBUG) DEBUG_APK_URL else RELEASE_APK_URL
-    val TEST_APK_VERSION_URL: String
-        get() = "${TEST_APK_URL.substringBeforeLast('/')}/version"
+    private const val LATEST_RELEASE_API_URL = "https://api.github.com/repos/jadylc/blbl/releases/latest"
+    private const val DEBUG_ASSET_SUFFIX = "-debug.apk"
+    private const val RELEASE_ASSET_SUFFIX = "-release.apk"
 
     private const val COOLDOWN_MS = 5_000L
 
@@ -76,6 +74,12 @@ object ApkUpdater {
         }
     }
 
+    data class ReleaseInfo(
+        val versionName: String,
+        val downloadUrl: String,
+        val assetName: String,
+    )
+
     fun markStarted(nowMs: Long = System.currentTimeMillis()) {
         lastStartedAtMs = nowMs
     }
@@ -86,9 +90,9 @@ object ApkUpdater {
         return left.coerceAtLeast(0)
     }
 
-    suspend fun fetchLatestVersionName(
-        url: String = TEST_APK_VERSION_URL,
-    ): String {
+    suspend fun fetchLatestReleaseInfo(
+        apiUrl: String = LATEST_RELEASE_API_URL,
+    ): ReleaseInfo {
         // Entering Settings -> About triggers an automatic check. On some networks/devices the first request
         // may fail transiently but succeeds immediately when retried (e.g. connection warm-up / route setup).
         return withContext(Dispatchers.IO) {
@@ -97,7 +101,7 @@ object ApkUpdater {
             for (attempt in 1..maxAttempts) {
                 ensureActive()
                 try {
-                    return@withContext fetchLatestVersionNameOnce(url)
+                    return@withContext fetchLatestReleaseInfoOnce(apiUrl)
                 } catch (t: Throwable) {
                     if (t is CancellationException) throw t
                     lastError = t
@@ -112,17 +116,39 @@ object ApkUpdater {
         }
     }
 
-    private fun fetchLatestVersionNameOnce(url: String): String {
-        val req = Request.Builder().url(url).get().build()
+    suspend fun fetchLatestVersionName(
+        apiUrl: String = LATEST_RELEASE_API_URL,
+    ): String = fetchLatestReleaseInfo(apiUrl).versionName
+
+    private fun fetchLatestReleaseInfoOnce(apiUrl: String): ReleaseInfo {
+        val req =
+            Request.Builder()
+                .url(apiUrl)
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "${BuildConfig.APPLICATION_ID}/${BuildConfig.VERSION_NAME}")
+                .get()
+                .build()
         val call = okHttp.newCall(req)
         val res = call.execute()
         res.use { r ->
+            if (r.code == 404) error("当前 fork 仓库尚未发布正式版 Release")
             check(r.isSuccessful) { "HTTP ${r.code} ${r.message}" }
             val body = r.body ?: error("empty body")
-            val versionName = body.string().trim()
+            val json = JSONObject(body.string())
+            val versionName = json.optString("tag_name", "").trim().removePrefix("v")
             check(versionName.isNotBlank()) { "版本号为空" }
             check(parseVersion(versionName) != null) { "版本号格式不正确：$versionName" }
-            return versionName
+            val assets = json.optJSONArray("assets") ?: error("未找到安装包")
+            val suffix = if (BuildConfig.DEBUG) DEBUG_ASSET_SUFFIX else RELEASE_ASSET_SUFFIX
+            for (i in 0 until assets.length()) {
+                val asset = assets.optJSONObject(i) ?: continue
+                val name = asset.optString("name", "").trim()
+                val downloadUrl = asset.optString("browser_download_url", "").trim()
+                if (!name.endsWith(suffix, ignoreCase = true)) continue
+                if (downloadUrl.isBlank()) continue
+                return ReleaseInfo(versionName = versionName, downloadUrl = downloadUrl, assetName = name)
+            }
+            error("最新 Release 未找到可下载的 ${if (BuildConfig.DEBUG) "debug" else "release"} 安装包")
         }
     }
 
@@ -134,7 +160,7 @@ object ApkUpdater {
 
     suspend fun downloadApkToCache(
         context: Context,
-        url: String = TEST_APK_URL,
+        url: String? = null,
         onProgress: (Progress) -> Unit,
     ): File {
         onProgress(Progress.Connecting)
@@ -145,7 +171,8 @@ object ApkUpdater {
         runCatching { part.delete() }
         runCatching { target.delete() }
 
-        val req = Request.Builder().url(url).get().build()
+        val resolvedUrl = url?.trim().takeUnless { it.isNullOrBlank() } ?: fetchLatestReleaseInfo().downloadUrl
+        val req = Request.Builder().url(resolvedUrl).get().build()
         val call = okHttp.newCall(req)
         val res = call.await()
         res.use { r ->
