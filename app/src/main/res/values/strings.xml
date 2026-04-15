@@ -89,7 +89,7 @@
     <string name="player_list_empty">暂无内容</string>
     <string name="player_btn_comments">评论</string>
     <string name="player_btn_detail">视频详情页</string>
-    <string name="player_btn_up">UP主</string>
+    <string name="player_btn_up">稍后再看</string>
     <string name="player_btn_like">点赞</string>
     <string name="player_btn_coin">投币</string>
     <string name="player_btn_fav">收藏</string>

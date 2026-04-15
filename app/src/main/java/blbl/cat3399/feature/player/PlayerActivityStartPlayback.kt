@@ -100,6 +100,8 @@ internal fun PlayerActivity.resetPlaybackStateForNewMedia(
     favDialogJob = null
     favApplyJob?.cancel()
     favApplyJob = null
+    toViewActionJob?.cancel()
+    toViewActionJob = null
     tripleActionJob?.cancel()
     tripleActionJob = null
     cancelLikeButtonHoldGesture(resetTriggered = true)
@@ -109,6 +111,7 @@ internal fun PlayerActivity.resetPlaybackStateForNewMedia(
     actionLiked = false
     actionCoinCount = 0
     actionFavored = false
+    actionToViewAdded = false
     updateActionButtonsUi()
 
     if (!preservePartsList) {

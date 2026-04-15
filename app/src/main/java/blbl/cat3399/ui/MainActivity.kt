@@ -113,6 +113,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         )
         binding.recyclerSidebar.layoutManager = LinearLayoutManager(this)
         binding.recyclerSidebar.adapter = navAdapter
+        navAdapter.setShowLabelsAlways(true)
         (binding.recyclerSidebar.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
         navAdapter.submit(MainRootNavRegistry.sidebarItems(this), selectedId = initialSelectedNavId)
 

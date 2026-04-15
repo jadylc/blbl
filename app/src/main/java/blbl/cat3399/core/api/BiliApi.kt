@@ -523,6 +523,11 @@ object BiliApi {
 
     suspend fun toViewList(): List<VideoCard> = VideoApi.toViewList()
 
+    suspend fun toViewAdd(
+        bvid: String? = null,
+        aid: Long? = null,
+    ) = VideoApi.toViewAdd(bvid = bvid, aid = aid)
+
     suspend fun spaceLikeVideoList(vmid: Long): List<VideoCard> = VideoApi.spaceLikeVideoList(vmid = vmid)
 
     private suspend fun favFolderInfo(mediaId: Long): FavFolder? {

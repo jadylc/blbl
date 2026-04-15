@@ -78,6 +78,40 @@ internal object VideoApi {
         return withContext(Dispatchers.Default) { parseVideoCards(list) }
     }
 
+    suspend fun toViewAdd(
+        bvid: String? = null,
+        aid: Long? = null,
+    ) {
+        val safeBvid = bvid?.trim().orEmpty()
+        val safeAid = aid?.takeIf { it > 0L }
+        if (safeBvid.isBlank() && safeAid == null) throw BiliApiException(apiCode = -400, apiMessage = "missing_video_id")
+
+        WebCookieMaintainer.ensureWebFingerprintCookies()
+        WebCookieMaintainer.ensureBuvidActiveOncePerDay()
+        val csrf = BiliClient.cookies.getCookieValue("bili_jct").orEmpty().trim()
+        if (csrf.isBlank()) throw BiliApiException(apiCode = -111, apiMessage = "missing_csrf")
+
+        val url = "https://api.bilibili.com/x/v2/history/toview/add"
+        val form =
+            buildMap {
+                if (safeBvid.isNotBlank()) put("bvid", safeBvid)
+                safeAid?.let { put("aid", it.toString()) }
+                put("csrf", csrf)
+            }
+        val json =
+            BiliClient.postFormJson(
+                url,
+                form = form,
+                headers = BiliApi.piliWebHeaders(targetUrl = url, includeCookie = true),
+                noCookies = true,
+            )
+        val code = json.optInt("code", 0)
+        if (code != 0) {
+            val msg = json.optString("message", json.optString("msg", ""))
+            throw BiliApiException(apiCode = code, apiMessage = msg)
+        }
+    }
+
     suspend fun spaceLikeVideoList(vmid: Long): List<VideoCard> {
         val mid = vmid.takeIf { it > 0 } ?: error("space_like_video_invalid_vmid")
         val url =

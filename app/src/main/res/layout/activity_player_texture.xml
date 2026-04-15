@@ -467,7 +467,7 @@
                 android:focusable="true"
             android:padding="?attr/playerOsdPadNormal"
             android:scaleType="fitCenter"
-            android:src="@drawable/ic_player_up"
+            android:src="@drawable/ic_player_toview"
             app:tint="@color/player_button_tint" />
 
             <blbl.cat3399.feature.player.HoldProgressImageButton

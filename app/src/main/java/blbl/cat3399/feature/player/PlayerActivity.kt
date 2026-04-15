@@ -151,10 +151,12 @@ class PlayerActivity : BaseActivity() {
     internal var actionLiked: Boolean = false
     internal var actionCoinCount: Int = 0
     internal var actionFavored: Boolean = false
+    internal var actionToViewAdded: Boolean = false
     internal var likeActionJob: kotlinx.coroutines.Job? = null
     internal var coinActionJob: kotlinx.coroutines.Job? = null
     internal var favDialogJob: kotlinx.coroutines.Job? = null
     internal var favApplyJob: kotlinx.coroutines.Job? = null
+    internal var toViewActionJob: Job? = null
     internal var tripleActionJob: Job? = null
     internal var socialStateFetchJob: kotlinx.coroutines.Job? = null
     internal var socialStateFetchToken: Int = 0
@@ -2090,7 +2092,7 @@ class PlayerActivity : BaseActivity() {
         }
 
         binding.btnUp.setOnClickListener {
-            openCurrentUpDetail()
+            onToViewButtonClicked()
             setControlsVisible(true)
         }
         setupUpQuickCardActions()

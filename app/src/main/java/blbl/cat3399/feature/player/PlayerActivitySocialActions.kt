@@ -16,7 +16,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import blbl.cat3399.core.model.VideoCard
 
 internal fun PlayerActivity.applyOsdButtonsVisibility() {
     val enabled = BiliClient.prefs.playerOsdButtons.toSet()
@@ -48,9 +47,19 @@ internal fun PlayerActivity.applyOsdButtonsVisibility() {
 }
 
 internal fun PlayerActivity.updateActionButtonsUi() {
+    updateToViewButtonUi()
     updateLikeButtonUi()
     updateCoinButtonUi()
     updateFavButtonUi()
+}
+
+internal fun PlayerActivity.updateToViewButtonUi() {
+    val hasVideoId = currentBvid.isNotBlank() || (currentAid ?: 0L) > 0L
+    val active = actionToViewAdded
+    val colorRes = if (active) R.color.blbl_blue else R.color.blbl_text
+    binding.btnUp.imageTintList = ContextCompat.getColorStateList(this, colorRes)
+    binding.btnUp.isEnabled = hasVideoId
+    binding.btnUp.alpha = if (hasVideoId) 1.0f else 0.35f
 }
 
 internal fun PlayerActivity.updateLikeButtonUi() {
@@ -83,6 +92,7 @@ internal fun PlayerActivity.refreshActionButtonStatesFromServer(
 ) {
     val enabled = BiliClient.prefs.playerOsdButtons.toSet()
     if (
+        !enabled.contains(AppPrefs.PLAYER_OSD_BTN_UP) &&
         !enabled.contains(AppPrefs.PLAYER_OSD_BTN_LIKE) &&
         !enabled.contains(AppPrefs.PLAYER_OSD_BTN_COIN) &&
         !enabled.contains(AppPrefs.PLAYER_OSD_BTN_FAV)
@@ -91,11 +101,13 @@ internal fun PlayerActivity.refreshActionButtonStatesFromServer(
     }
 
     if (!BiliClient.cookies.hasSessData()) return
-    val requestBvid = bvid.trim().takeIf { it.isNotBlank() } ?: return
+    val requestBvid = bvid.trim()
     val requestAid = aid?.takeIf { it > 0L }
+    if (requestBvid.isBlank() && requestAid == null) return
 
     socialStateFetchJob?.cancel()
     val token = ++socialStateFetchToken
+    val baselineToViewAdded = actionToViewAdded
     val baselineLiked = actionLiked
     val baselineCoinCount = actionCoinCount
     val baselineFavored = actionFavored
@@ -103,9 +115,20 @@ internal fun PlayerActivity.refreshActionButtonStatesFromServer(
     socialStateFetchJob =
         lifecycleScope.launch {
             try {
-                val (liked, coins, favoured) =
+                val result =
                     withContext(Dispatchers.IO) {
                         coroutineScope {
+                            val toViewJob =
+                                async {
+                                    runCatching {
+                                        BiliApi.toViewList().any { item ->
+                                            val itemBvid = item.bvid.trim()
+                                            val itemAid = item.aid?.takeIf { it > 0L }
+                                            (requestBvid.isNotBlank() && itemBvid == requestBvid) ||
+                                                (requestAid != null && itemAid == requestAid)
+                                        }
+                                    }.getOrNull()
+                                }
                             val likedJob =
                                 async {
                                     runCatching { BiliApi.archiveHasLike(bvid = requestBvid, aid = requestAid) }.getOrNull()
@@ -118,28 +141,39 @@ internal fun PlayerActivity.refreshActionButtonStatesFromServer(
                                 async {
                                     runCatching { BiliApi.archiveFavoured(bvid = requestBvid, aid = requestAid) }.getOrNull()
                                 }
-                            Triple(likedJob.await(), coinsJob.await(), favouredJob.await())
+                            SocialActionStateResult(
+                                toViewAdded = toViewJob.await(),
+                                liked = likedJob.await(),
+                                coinCount = coinsJob.await(),
+                                favored = favouredJob.await(),
+                            )
                         }
                     }
 
                 if (token != socialStateFetchToken) return@launch
-                if (currentBvid != requestBvid) return@launch
+                if (requestBvid.isNotBlank() && currentBvid != requestBvid) return@launch
                 if (requestAid != null && currentAid != requestAid) return@launch
 
                 var changed = false
-                liked?.let { value ->
+                result.toViewAdded?.let { value ->
+                    if (toViewActionJob?.isActive != true && actionToViewAdded == baselineToViewAdded) {
+                        actionToViewAdded = value
+                        changed = true
+                    }
+                }
+                result.liked?.let { value ->
                     if (tripleActionJob?.isActive != true && likeActionJob?.isActive != true && actionLiked == baselineLiked) {
                         actionLiked = value
                         changed = true
                     }
                 }
-                coins?.let { value ->
+                result.coinCount?.let { value ->
                     if (tripleActionJob?.isActive != true && coinActionJob?.isActive != true && actionCoinCount == baselineCoinCount) {
                         actionCoinCount = value.coerceIn(0, 2)
                         changed = true
                     }
                 }
-                favoured?.let { value ->
+                result.favored?.let { value ->
                     if (
                         tripleActionJob?.isActive != true &&
                         favDialogJob?.isActive != true &&
@@ -153,6 +187,67 @@ internal fun PlayerActivity.refreshActionButtonStatesFromServer(
                 if (changed) updateActionButtonsUi()
             } finally {
                 if (token == socialStateFetchToken) socialStateFetchJob = null
+            }
+        }
+}
+
+private data class SocialActionStateResult(
+    val toViewAdded: Boolean?,
+    val liked: Boolean?,
+    val coinCount: Int?,
+    val favored: Boolean?,
+)
+
+internal fun PlayerActivity.onToViewButtonClicked(showControls: Boolean = true) {
+    if (tripleActionJob?.isActive == true) return
+    if (toViewActionJob?.isActive == true) return
+    if (!BiliClient.cookies.hasSessData()) {
+        AppToast.show(this, "请先登录后再添加")
+        return
+    }
+    if (actionToViewAdded) {
+        AppToast.show(this, "已添加到稍后再看")
+        return
+    }
+
+    val requestBvid = currentBvid.trim().takeIf { it.isNotBlank() }
+    val requestAid = currentAid?.takeIf { it > 0L }
+    if (requestBvid == null && requestAid == null) {
+        AppToast.show(this, "未获取到 bvid/aid，暂不支持稍后再看")
+        return
+    }
+    if (showControls) setControlsVisible(true)
+
+    toViewActionJob =
+        lifecycleScope.launch {
+            try {
+                updateToViewButtonUi()
+                BiliApi.toViewAdd(bvid = requestBvid, aid = requestAid)
+                if (requestBvid != null && currentBvid != requestBvid) return@launch
+                if (requestAid != null && currentAid != requestAid) return@launch
+                actionToViewAdded = true
+                AppToast.show(this@onToViewButtonClicked, "已添加到稍后再看")
+            } catch (t: Throwable) {
+                if (t is CancellationException) return@launch
+                val e = t as? BiliApiException
+                val apiMessage = e?.apiMessage?.trim().orEmpty()
+                val alreadyAdded =
+                    apiMessage.contains("已在稍后再看") ||
+                        apiMessage.contains("已添加") ||
+                        apiMessage.contains("已存在") ||
+                        apiMessage.contains("already", ignoreCase = true)
+                if (alreadyAdded) {
+                    if (requestBvid != null && currentBvid != requestBvid) return@launch
+                    if (requestAid != null && currentAid != requestAid) return@launch
+                    actionToViewAdded = true
+                    AppToast.show(this@onToViewButtonClicked, "已添加到稍后再看")
+                } else {
+                    val msg = e?.apiMessage?.takeIf { it.isNotBlank() } ?: (t.message ?: "操作失败")
+                    AppToast.show(this@onToViewButtonClicked, msg)
+                }
+            } finally {
+                toViewActionJob = null
+                updateToViewButtonUi()
             }
         }
 }
@@ -379,14 +474,11 @@ internal fun PlayerActivity.updatePlaylistControls() {
 }
 
 internal fun PlayerActivity.updateUpButton() {
-    val enabled = currentUpMid > 0L
-    val alpha = if (enabled) 1.0f else 0.35f
-    binding.btnUp.isEnabled = enabled
-    binding.btnUp.alpha = alpha
+    updateToViewButtonUi()
     updateUpQuickCardUi()
 }
 
-internal fun PlayerActivity.pickRecommendedVideo(items: List<VideoCard>, excludeBvid: String): VideoCard? {
+internal fun PlayerActivity.pickRecommendedVideo(items: List<blbl.cat3399.core.model.VideoCard>, excludeBvid: String): blbl.cat3399.core.model.VideoCard? {
     val safeExclude = excludeBvid.trim()
     return items.firstOrNull { it.bvid.isNotBlank() && it.bvid != safeExclude }
         ?: items.firstOrNull { it.bvid.isNotBlank() }
