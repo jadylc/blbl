@@ -472,10 +472,10 @@ class SettingsRenderer(
     private fun aboutUpdateEntry(): SettingEntry {
         val currentVersion = BuildConfig.VERSION_NAME
         val title = "检查更新"
-        val defaultDesc = "检查当前 fork 仓库最新 Release 并下载安装"
+        val defaultDesc = "检查远程更新并下载安装"
         return when (val checkState = state.testUpdateCheckState) {
             TestUpdateCheckState.Idle -> SettingEntry(SettingId.CheckUpdate, title, "点击检查", defaultDesc)
-            TestUpdateCheckState.Checking -> SettingEntry(SettingId.CheckUpdate, title, "检查中…", "正在获取 GitHub Release 信息…")
+            TestUpdateCheckState.Checking -> SettingEntry(SettingId.CheckUpdate, title, "检查中…", "正在获取更新信息…")
 
             is TestUpdateCheckState.Latest ->
                 SettingEntry(

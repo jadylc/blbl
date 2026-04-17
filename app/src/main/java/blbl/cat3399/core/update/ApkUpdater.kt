@@ -7,6 +7,7 @@ import blbl.cat3399.BuildConfig
 import blbl.cat3399.core.net.BiliClient
 import blbl.cat3399.core.net.await
 import blbl.cat3399.core.net.ipv4OnlyDns
+import blbl.cat3399.feature.settings.SettingsConstants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -19,13 +20,13 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.regex.Pattern
 import kotlin.math.roundToInt
-import org.json.JSONObject
 
 object ApkUpdater {
-    private const val LATEST_RELEASE_API_URL = "https://api.github.com/repos/jadylc/blbl/releases/latest"
-    private const val DEBUG_ASSET_SUFFIX = "-debug.apk"
-    private const val RELEASE_ASSET_SUFFIX = "-release.apk"
+    private const val DEFAULT_ASSET_NAME = "update.apk"
+    private val VERSION_FIELD_REGEX = Pattern.compile("\"version\"\\s*:\\s*\"([^\"]*)\"")
+    private val APK_URL_FIELD_REGEX = Pattern.compile("\"apk_url\"\\s*:\\s*\"([^\"]*)\"")
 
     private const val COOLDOWN_MS = 5_000L
 
@@ -91,7 +92,7 @@ object ApkUpdater {
     }
 
     suspend fun fetchLatestReleaseInfo(
-        apiUrl: String = LATEST_RELEASE_API_URL,
+        apiUrl: String = SettingsConstants.UPDATE_METADATA_URL,
     ): ReleaseInfo {
         // Entering Settings -> About triggers an automatic check. On some networks/devices the first request
         // may fail transiently but succeeds immediately when retried (e.g. connection warm-up / route setup).
@@ -117,39 +118,43 @@ object ApkUpdater {
     }
 
     suspend fun fetchLatestVersionName(
-        apiUrl: String = LATEST_RELEASE_API_URL,
+        apiUrl: String = SettingsConstants.UPDATE_METADATA_URL,
     ): String = fetchLatestReleaseInfo(apiUrl).versionName
 
     private fun fetchLatestReleaseInfoOnce(apiUrl: String): ReleaseInfo {
         val req =
             Request.Builder()
                 .url(apiUrl)
-                .header("Accept", "application/vnd.github+json")
+                .header("Accept", "application/json")
                 .header("User-Agent", "${BuildConfig.APPLICATION_ID}/${BuildConfig.VERSION_NAME}")
                 .get()
                 .build()
         val call = okHttp.newCall(req)
         val res = call.execute()
         res.use { r ->
-            if (r.code == 404) error("当前 fork 仓库尚未发布正式版 Release")
+            if (r.code == 404) error("未找到更新信息")
             check(r.isSuccessful) { "HTTP ${r.code} ${r.message}" }
             val body = r.body ?: error("empty body")
-            val json = JSONObject(body.string())
-            val versionName = json.optString("tag_name", "").trim().removePrefix("v")
-            check(versionName.isNotBlank()) { "版本号为空" }
-            check(parseVersion(versionName) != null) { "版本号格式不正确：$versionName" }
-            val assets = json.optJSONArray("assets") ?: error("未找到安装包")
-            val suffix = if (BuildConfig.DEBUG) DEBUG_ASSET_SUFFIX else RELEASE_ASSET_SUFFIX
-            for (i in 0 until assets.length()) {
-                val asset = assets.optJSONObject(i) ?: continue
-                val name = asset.optString("name", "").trim()
-                val downloadUrl = asset.optString("browser_download_url", "").trim()
-                if (!name.endsWith(suffix, ignoreCase = true)) continue
-                if (downloadUrl.isBlank()) continue
-                return ReleaseInfo(versionName = versionName, downloadUrl = downloadUrl, assetName = name)
-            }
-            error("最新 Release 未找到可下载的 ${if (BuildConfig.DEBUG) "debug" else "release"} 安装包")
+            return parseReleaseInfo(body.string())
         }
+    }
+
+    internal fun parseReleaseInfo(jsonText: String): ReleaseInfo {
+        val versionName = extractJsonString(jsonText, VERSION_FIELD_REGEX).removePrefix("v")
+        check(versionName.isNotBlank()) { "版本号为空" }
+        check(parseVersion(versionName) != null) { "版本号格式不正确：$versionName" }
+
+        val downloadUrl = extractJsonString(jsonText, APK_URL_FIELD_REGEX)
+        check(downloadUrl.isNotBlank()) { "安装包地址为空" }
+
+        val assetName =
+            downloadUrl
+                .substringAfterLast('/')
+                .substringBefore('?')
+                .trim()
+                .ifBlank { DEFAULT_ASSET_NAME }
+
+        return ReleaseInfo(versionName = versionName, downloadUrl = downloadUrl, assetName = assetName)
     }
 
     fun isRemoteNewer(remoteVersionName: String, currentVersionName: String = BuildConfig.VERSION_NAME): Boolean {
@@ -235,6 +240,11 @@ object ApkUpdater {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
         context.startActivity(intent)
+    }
+
+    private fun extractJsonString(raw: String, pattern: Pattern): String {
+        val matcher = pattern.matcher(raw)
+        return if (matcher.find()) matcher.group(1)?.trim().orEmpty() else ""
     }
 
     private fun formatBytes(bytes: Long): String {

@@ -7,6 +7,7 @@ object SettingsConstants {
     const val MAINTAINER_URL = "https://github.com/jadylc"
     const val UPSTREAM_PROJECT_LABEL = "cat3399/blbl"
     const val UPSTREAM_PROJECT_URL = "https://github.com/cat3399/blbl"
+    const val UPDATE_METADATA_URL = "https://gitee.com/jadylc/asserts/raw/master/updates/version.json"
     const val UPDATE_CHECK_TTL_MS = 60_000L
 }
 
