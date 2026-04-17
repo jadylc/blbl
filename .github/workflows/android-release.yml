@@ -205,3 +205,67 @@ jobs:
             fi
           fi
           gh release upload "$RELEASE_TAG" "app/build/outputs/apk/release/${APK_FILE_NAME}" --clobber
+      - name: Sync release assets to Gitee
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
+          GITEE_REPO: ${{ vars.GITEE_REPO || 'jadylc/asserts' }}
+          GITEE_BRANCH: ${{ vars.GITEE_BRANCH || 'master' }}
+          GITEE_UPDATES_DIR: ${{ vars.GITEE_UPDATES_DIR || 'updates' }}
+          APK_FILE_NAME: ${{ steps.meta.outputs.apk_file_name }}
+          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
+          PUBLISH_STABLE_R2: ${{ steps.meta.outputs.publish_stable_r2 }}
+        run: |
+          set -euo pipefail
+
+          if [ "${PUBLISH_STABLE_R2}" != "true" ]; then
+            echo "Snapshot build, skipping Gitee sync."
+            exit 0
+          fi
+
+          missing=()
+          [ -n "${GITEE_TOKEN:-}" ] || missing+=("GITEE_TOKEN")
+          [ -n "${GITEE_USERNAME:-}" ] || missing+=("GITEE_USERNAME")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing Gitee secrets, skipping sync: ${missing[*]}"
+            exit 0
+          fi
+
+          APK_PATH="app/build/outputs/apk/release/${APK_FILE_NAME}"
+          if [ ! -f "${APK_PATH}" ]; then
+            echo "APK not found: ${APK_PATH}" >&2
+            exit 1
+          fi
+
+          repo_dir="$(mktemp -d)"
+          trap 'rm -rf "${repo_dir}"' EXIT
+
+          git clone "https://${GITEE_USERNAME}:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git" "${repo_dir}"
+          cd "${repo_dir}"
+          git checkout "${GITEE_BRANCH}"
+
+          updates_dir="${repo_dir}/${GITEE_UPDATES_DIR}"
+          mkdir -p "${updates_dir}"
+          cp "${GITHUB_WORKSPACE}/${APK_PATH}" "${updates_dir}/${APK_FILE_NAME}"
+
+          temp_json="${updates_dir}/version.json.tmp"
+          final_json="${updates_dir}/version.json"
+          printf '{\n  "version": "%s",\n  "apk_url": "https://gitee.com/%s/raw/%s/%s/%s"\n}\n' \
+            "${VERSION_NAME}" \
+            "${GITEE_REPO}" \
+            "${GITEE_BRANCH}" \
+            "${GITEE_UPDATES_DIR}" \
+            "${APK_FILE_NAME}" \
+            > "${temp_json}"
+          mv "${temp_json}" "${final_json}"
+
+          if [ -z "$(git status --porcelain -- "${GITEE_UPDATES_DIR}")" ]; then
+            echo "No Gitee asset changes to publish."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${GITEE_UPDATES_DIR}/${APK_FILE_NAME}" "${GITEE_UPDATES_DIR}/version.json"
+          git commit -m "sync ${VERSION_NAME} release assets"
+          git push origin "HEAD:${GITEE_BRANCH}"

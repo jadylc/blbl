@@ -82,6 +82,14 @@
 - `RELEASE_STORE_PASSWORD`
 - `RELEASE_KEY_ALIAS`
 - `RELEASE_KEY_PASSWORD`
+- `GITEE_TOKEN`
+- `GITEE_USERNAME`
+
+可选的仓库 Variables：
+
+- `GITEE_REPO`（默认 `jadylc/asserts`）
+- `GITEE_BRANCH`（默认 `master`）
+- `GITEE_UPDATES_DIR`（默认 `updates`）
 
 ## TODO 
 
