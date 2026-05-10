@@ -475,7 +475,6 @@ internal fun PlayerActivity.updatePlaylistControls() {
 
 internal fun PlayerActivity.updateUpButton() {
     updateToViewButtonUi()
-    updateUpQuickCardUi()
 }
 
 internal fun PlayerActivity.pickRecommendedVideo(items: List<blbl.cat3399.core.model.VideoCard>, excludeBvid: String): blbl.cat3399.core.model.VideoCard? {
