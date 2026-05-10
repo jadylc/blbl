@@ -10,6 +10,14 @@ sealed interface TestUpdateCheckState {
     data class Latest(val latestVersion: String) : TestUpdateCheckState
 
     data class UpdateAvailable(val update: ApkUpdater.RemoteUpdate) : TestUpdateCheckState {
+        constructor(latestVersion: String) : this(
+            ApkUpdater.RemoteUpdate(
+                versionName = latestVersion,
+                downloadUrl = "",
+                assetName = "",
+            ),
+        )
+
         val latestVersion: String
             get() = update.versionName
     }

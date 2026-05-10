@@ -1011,7 +1011,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 ApkUpdateFlow.startDownloadAndInstall(
                     activity = this,
                     latestVersionHint = selectedUpdate.versionName,
-                    apkUrl = ApkUpdater.apkUrlFor(selectedUpdate.versionName),
+                    apkUrl = selectedUpdate.downloadUrl,
                 )
             }
     }

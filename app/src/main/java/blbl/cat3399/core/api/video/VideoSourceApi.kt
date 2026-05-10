@@ -155,7 +155,10 @@ data class UgcSeasonArchivesPage(
     val request: UgcSeasonArchivesRequest,
     val items: List<VideoCard>,
     val totalCount: Int?,
-)
+) {
+    val total: Int
+        get() = totalCount ?: items.size
+}
 
 enum class VideoCollectionKind {
     SEASON,

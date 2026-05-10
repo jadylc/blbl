@@ -23,6 +23,7 @@ import blbl.cat3399.core.model.Danmaku
 import blbl.cat3399.core.model.DanmakuUserFilter
 import blbl.cat3399.core.model.FavFolder
 import blbl.cat3399.core.model.Following
+import blbl.cat3399.core.model.HistoryEntry
 import blbl.cat3399.core.model.LiveAreaParent
 import blbl.cat3399.core.model.LiveRoomCard
 import blbl.cat3399.core.model.VideoCard
@@ -223,7 +224,7 @@ object BiliApi {
     )
 
     data class HistoryPage(
-        val items: List<VideoCard>,
+        val items: List<HistoryEntry>,
         val cursor: HistoryCursor?,
     )
 
@@ -250,6 +251,8 @@ object BiliApi {
     data class LiveRoomInfo(
         val roomId: Long,
         val uid: Long,
+        val uname: String?,
+        val faceUrl: String?,
         val title: String,
         val liveStatus: Int,
         val areaName: String?,
@@ -465,12 +468,12 @@ object BiliApi {
         val list = data.optJSONArray("list") ?: JSONArray()
         val cards =
             withContext(Dispatchers.Default) {
-                val out = ArrayList<VideoCard>(list.length())
+                val out = ArrayList<HistoryEntry>(list.length())
                 for (i in 0 until list.length()) {
                     val it = list.optJSONObject(i) ?: continue
                     val history = it.optJSONObject("history") ?: JSONObject()
                     val businessType = history.optString("business", "")
-                    if (businessType != "archive" && businessType != "pgc") continue
+                    if (businessType != "archive" && businessType != "pgc" && businessType != "live") continue
 
                     val bvid = history.optString("bvid", "").trim()
                     val aid = history.optLong("oid").takeIf { v -> v > 0 }
@@ -507,7 +510,7 @@ object BiliApi {
                         showTitle?.let { add(it) }
                     }
                     val subtitle = subtitleParts.joinToString(" · ").takeIf { s -> s.isNotBlank() }
-                    out.add(
+                    val card =
                         VideoCard(
                             bvid = bvid,
                             cid = cid,
@@ -529,8 +532,31 @@ object BiliApi {
                             pubDateText = subtitle,
                             progressSec = progressSec,
                             progressFinished = progressFinished,
-                        ),
-                    )
+                        )
+                    when (businessType) {
+                        "live" ->
+                            out.add(
+                                HistoryEntry.Live(
+                                    LiveRoomCard(
+                                        roomId = aid ?: 0L,
+                                        uid = card.ownerMid ?: 0L,
+                                        title = card.title,
+                                        uname = card.ownerName,
+                                        coverUrl = card.coverUrl,
+                                        faceUrl = card.ownerFace,
+                                        online = 0L,
+                                        isLive = true,
+                                        parentAreaId = null,
+                                        parentAreaName = null,
+                                        areaId = null,
+                                        areaName = null,
+                                        keyframe = card.coverUrl,
+                                    ),
+                                ),
+                            )
+
+                        else -> out.add(HistoryEntry.Video(card))
+                    }
                 }
                 out
             }
@@ -559,6 +585,9 @@ object BiliApi {
 
     suspend fun videoDetail(bvid: String): VideoDetail =
         VideoApiGateway.detail(VideoDetailRequest(bvid = bvid))
+
+    suspend fun videoDetail(aid: Long): VideoDetail =
+        VideoApiGateway.detail(VideoDetailRequest(aid = aid))
 
     suspend fun playUrl(request: VideoPlayRequest): VideoPlayStream = VideoApiGateway.playUrl(request)
 

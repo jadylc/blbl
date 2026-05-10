@@ -36,7 +36,6 @@ import blbl.cat3399.core.prefs.PlayerCustomShortcut
 import blbl.cat3399.core.prefs.PlayerCustomShortcutAction
 import blbl.cat3399.core.prefs.PlayerPlaybackModes
 import blbl.cat3399.core.prefs.PlayerCustomShortcutsStore
-import blbl.cat3399.core.theme.LauncherAliasManager
 import blbl.cat3399.core.ui.AppToast
 import blbl.cat3399.core.ui.Immersive
 import blbl.cat3399.core.ui.popup.AppPopup
@@ -321,10 +320,9 @@ class SettingsInteractionHandler(
                 failureLogMessage = "apply config failed",
                 failureToastPrefix = "导入失败",
                 work = {
-                    AppConfigBackup.apply(parsed, prefs = BiliClient.prefs, cookies = BiliClient.cookies)
+                    AppConfigBackup.apply(parsed, prefs = BiliClient.prefs, cookies = BiliClient.cookies, accounts = BiliClient.accounts)
                 },
             ) {
-                LauncherAliasManager.sync(activity.applicationContext, BiliClient.prefs.themePreset)
                 evictNetworkConnections()
                 AppToast.showLong(activity, if (parsed.includesCredentials) "已导入配置与登录状态，正在重启…" else "已导入配置，正在重启…")
                 restartToMain()
@@ -335,6 +333,7 @@ class SettingsInteractionHandler(
         return AppConfigBackup.prepareExport(
             prefs = BiliClient.prefs,
             cookies = BiliClient.cookies,
+            accounts = BiliClient.accounts,
             mode = mode,
         )
     }
@@ -759,7 +758,6 @@ class SettingsInteractionHandler(
                     }
 
                     prefs.themePreset = key
-                    LauncherAliasManager.sync(activity.applicationContext, key)
                     AppToast.show(activity, "主题：$selected（已应用）")
                     restartToMain()
                 }

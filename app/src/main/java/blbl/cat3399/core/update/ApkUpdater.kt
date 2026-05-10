@@ -81,6 +81,17 @@ object ApkUpdater {
         val assetName: String,
     )
 
+    data class RemoteUpdate(
+        val versionName: String,
+        val downloadUrl: String,
+        val assetName: String,
+        val changelog: String = "",
+        val versions: List<RemoteUpdate> = emptyList(),
+    ) {
+        val displayChangelog: String
+            get() = changelog.ifBlank { "暂无更新说明" }
+    }
+
     fun markStarted(nowMs: Long = System.currentTimeMillis()) {
         lastStartedAtMs = nowMs
     }
@@ -120,6 +131,17 @@ object ApkUpdater {
     suspend fun fetchLatestVersionName(
         apiUrl: String = SettingsConstants.UPDATE_METADATA_URL,
     ): String = fetchLatestReleaseInfo(apiUrl).versionName
+
+    suspend fun fetchLatestUpdate(
+        apiUrl: String = SettingsConstants.UPDATE_METADATA_URL,
+    ): RemoteUpdate = fetchLatestReleaseInfo(apiUrl).toRemoteUpdate()
+
+    private fun ReleaseInfo.toRemoteUpdate(): RemoteUpdate =
+        RemoteUpdate(
+            versionName = versionName,
+            downloadUrl = downloadUrl,
+            assetName = assetName,
+        )
 
     private fun fetchLatestReleaseInfoOnce(apiUrl: String): ReleaseInfo {
         val req =
