@@ -5,6 +5,7 @@ import blbl.cat3399.core.api.video.VideoCollectionSectionsPage
 import blbl.cat3399.core.api.video.VideoCollectionSectionsRequest
 import blbl.cat3399.core.api.video.VideoDetail
 import blbl.cat3399.core.api.video.VideoDetailRequest
+import blbl.cat3399.core.api.video.VideoCardPage
 import blbl.cat3399.core.api.video.VideoOnlineStatus
 import blbl.cat3399.core.api.video.VideoOnlineStatusRequest
 import blbl.cat3399.core.api.video.VideoPlayerInfo
@@ -14,6 +15,7 @@ import blbl.cat3399.core.api.video.VideoPlayStream
 import blbl.cat3399.core.api.video.VideoShotRequest
 import blbl.cat3399.core.api.video.UgcSeasonArchivesPage
 import blbl.cat3399.core.api.video.UgcSeasonArchivesRequest
+import blbl.cat3399.core.api.video.VideoSeriesArchivesRequest
 import blbl.cat3399.core.log.AppLog
 import blbl.cat3399.core.model.BangumiEpisode
 import blbl.cat3399.core.model.BangumiEpisodeSection
@@ -639,6 +641,25 @@ object BiliApi {
                 mid = mid,
                 pageNum = pageNum,
                 pageSize = pageSize,
+            ),
+        )
+
+    suspend fun seriesArchives(
+        mid: Long,
+        seriesId: Long,
+        pageNum: Int = 1,
+        pageSize: Int = 20,
+        sort: String = "desc",
+        onlyNormal: Boolean = true,
+    ): VideoCardPage<VideoSeriesArchivesRequest> =
+        VideoApiGateway.seriesArchives(
+            VideoSeriesArchivesRequest(
+                mid = mid,
+                seriesId = seriesId,
+                pageNum = pageNum,
+                pageSize = pageSize,
+                sort = sort,
+                onlyNormal = onlyNormal,
             ),
         )
 
