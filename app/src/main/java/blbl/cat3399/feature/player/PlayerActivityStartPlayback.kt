@@ -386,7 +386,11 @@ internal fun PlayerActivity.startPlayback(
                         ?: safeBvid
                 if (resolvedBvid.isNotBlank()) currentBvid = resolvedBvid
 
-                val cid = cidExtra ?: detail.cid?.takeIf { it > 0 } ?: error("cid missing")
+                val cid =
+                    cidExtra
+                        ?: detail.cid?.takeIf { it > 0 }
+                        ?: detail.pages.firstOrNull { it.cid > 0L }?.cid
+                        ?: error("cid missing")
                 val aid = detail.aid?.takeIf { it > 0 }
                 currentAid = currentAid ?: aid ?: safeAid
                 currentCid = cid

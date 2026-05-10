@@ -387,7 +387,6 @@ class SettingsRenderer(
                     ),
                     SettingEntry(SettingId.LogTag, "日志标签", "BLBL", "用于 Logcat 过滤"),
                     SettingEntry(SettingId.ExportLogs, "导出日志", "保存文件", null),
-                    SettingEntry(SettingId.UploadLogs, "上传日志", "点击上传", "打包并上传日志zip到开发者（含设备/版本等元数据）"),
                     aboutUpdateEntry(),
                 )
 

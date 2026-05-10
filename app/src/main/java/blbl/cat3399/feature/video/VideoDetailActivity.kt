@@ -377,7 +377,10 @@ class VideoDetailActivity : BaseActivity() {
 
                     val resolvedBvid = detail.bvid.trim().takeIf { it.isNotBlank() } ?: bvid
                     val resolvedAid = detail.aid?.takeIf { it > 0L } ?: aid
-                    val resolvedCid = cid ?: detail.cid?.takeIf { it > 0L }
+                    val resolvedCid =
+                        cid
+                            ?: detail.cid?.takeIf { it > 0L }
+                            ?: detail.pages.firstOrNull { it.cid > 0L }?.cid
 
                     bvid = resolvedBvid
                     aid = resolvedAid

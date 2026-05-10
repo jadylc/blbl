@@ -383,12 +383,12 @@ internal class WebVideoApi(
     private suspend fun requestUgcPlayJson(request: VideoPlayRequest): JSONObject {
         transport.ensureUgcPlayCookieMaintenance()
         val bvid = request.bvid?.trim().orEmpty()
+        val aid = request.aid?.takeIf { it > 0L }
         val cid = request.cid?.takeIf { it > 0 } ?: error("cid required")
-        if (bvid.isBlank()) error("bvid required")
+        if (bvid.isBlank() && aid == null) error("bvid or aid required")
 
         val params =
             mutableMapOf(
-                "bvid" to bvid,
                 "cid" to cid.toString(),
                 "qn" to request.qn.toString(),
                 "fnver" to "0",
@@ -407,6 +407,8 @@ internal class WebVideoApi(
                 params["gaia_vtoken"] = it
             }
         }
+        if (bvid.isNotBlank()) params["bvid"] = bvid
+        aid?.let { params["avid"] = it.toString() }
         return requestWbiPlayUrl(params = params, includeCookie = !request.tryLook)
     }
 
