@@ -644,25 +644,6 @@ object BiliApi {
             ),
         )
 
-    suspend fun seriesArchives(
-        mid: Long,
-        seriesId: Long,
-        pageNum: Int = 1,
-        pageSize: Int = 20,
-        sort: String = "desc",
-        onlyNormal: Boolean = true,
-    ): VideoCardPage<VideoSeriesArchivesRequest> =
-        VideoApiGateway.seriesArchives(
-            VideoSeriesArchivesRequest(
-                mid = mid,
-                seriesId = seriesId,
-                pageNum = pageNum,
-                pageSize = pageSize,
-                sort = sort,
-                onlyNormal = onlyNormal,
-            ),
-        )
-
     private suspend fun favFolderInfo(mediaId: Long): FavFolder? {
         val url = BiliClient.withQuery(
             "https://api.bilibili.com/x/v3/fav/folder/info",
@@ -1486,14 +1467,16 @@ object BiliApi {
         pageSize: Int = 20,
         sort: String = "desc",
         onlyNormal: Boolean = true,
-    ): JSONObject =
-        VideoApi.seriesArchives(
-            mid = mid,
-            seriesId = seriesId,
-            pageNum = pageNum,
-            pageSize = pageSize,
-            sort = sort,
-            onlyNormal = onlyNormal,
+    ): VideoCardPage<VideoSeriesArchivesRequest> =
+        VideoApiGateway.seriesArchives(
+            VideoSeriesArchivesRequest(
+                mid = mid,
+                seriesId = seriesId,
+                pageNum = pageNum,
+                pageSize = pageSize,
+                sort = sort,
+                onlyNormal = onlyNormal,
+            ),
         )
 
     suspend fun onlineTotal(bvid: String, cid: Long): JSONObject = VideoApi.onlineTotal(bvid = bvid, cid = cid)
