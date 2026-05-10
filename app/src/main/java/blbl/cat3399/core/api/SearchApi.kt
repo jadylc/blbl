@@ -406,7 +406,7 @@ internal object SearchApi {
             val faceUrl = obj.optString("uface").takeIf { it.isNotBlank() }
             val online = obj.optLong("online").takeIf { it > 0 } ?: 0L
             val isLive = obj.optInt("live_status").let { it == 1 } || obj.optBoolean("is_live", false)
-            val areaName = obj.optString("cate_name").takeIf { it.isNotBlank() }
+            val areaName = stripHtmlTags(obj.optString("cate_name")).trim().takeIf { it.isNotBlank() }
             out.add(
                 LiveRoomCard(
                     roomId = roomId,
@@ -464,6 +464,7 @@ internal object SearchApi {
         return VideoCard(
             bvid = bvid,
             cid = null,
+            aid = obj.optLong("aid").takeIf { it > 0 },
             title = stripHtmlTags(obj.optString("title", "")),
             coverUrl = obj.optString("pic", ""),
             durationSec = BiliApi.parseDuration(obj.optString("duration", "0:00")),
@@ -477,6 +478,10 @@ internal object SearchApi {
             danmaku = obj.optLong("video_review").takeIf { it > 0 },
             pubDate = obj.optLong("pubdate").takeIf { it > 0 },
             pubDateText = null,
+            trackId =
+                obj.optString("trackid", obj.optString("track_id", ""))
+                    .trim()
+                    .takeIf { it.isNotBlank() },
         )
     }
 

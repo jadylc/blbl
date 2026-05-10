@@ -14,7 +14,10 @@ import androidx.recyclerview.widget.SimpleItemAnimator
 import blbl.cat3399.R
 import blbl.cat3399.core.api.BiliApi
 import blbl.cat3399.core.api.BiliApiException
+import blbl.cat3399.core.api.video.VideoCollectionKind
+import blbl.cat3399.core.api.video.VideoCollectionSection
 import blbl.cat3399.core.log.AppLog
+import blbl.cat3399.core.model.VideoCard
 import blbl.cat3399.core.net.BiliClient
 import blbl.cat3399.core.tv.RemoteKeys
 import blbl.cat3399.core.ui.ActivityStackLimiter
@@ -31,20 +34,24 @@ import blbl.cat3399.core.ui.postIfAlive
 import blbl.cat3399.core.util.Format
 import blbl.cat3399.databinding.ActivityUpDetailBinding
 import blbl.cat3399.feature.login.QrLoginActivity
-import blbl.cat3399.feature.player.PlayerActivity
-import blbl.cat3399.feature.player.PlayerPlaylistItem
-import blbl.cat3399.feature.player.PlayerPlaylistStore
-import blbl.cat3399.feature.video.VideoDetailActivity
+import blbl.cat3399.feature.player.PlayerPlaylistContinuation
+import blbl.cat3399.feature.player.VideoCardPlaylistPage
+import blbl.cat3399.feature.player.buildFreshVideoCardPlaylistContinuation
+import blbl.cat3399.feature.video.VideoCardActionController
 import blbl.cat3399.feature.video.VideoCardAdapter
+import blbl.cat3399.feature.video.VideoCardDismissBehavior
+import blbl.cat3399.feature.video.VideoCardVisibilityFilter
+import blbl.cat3399.feature.video.buildPagedVideoCardPlaybackHandle
+import blbl.cat3399.feature.video.buildVideoCardPlaybackHandle
+import blbl.cat3399.feature.video.defaultVideoCardPlaylistItem
+import blbl.cat3399.feature.video.openVideoDetailFromPlaybackHandle
+import blbl.cat3399.feature.video.openVideoFromPlaybackHandle
+import blbl.cat3399.feature.video.removeVideoCardAndRestoreFocus
 import com.google.android.material.R as MaterialR
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.tabs.TabLayout
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 
 class UpDetailActivity : BaseActivity() {
     private lateinit var binding: ActivityUpDetailBinding
@@ -69,7 +76,7 @@ class UpDetailActivity : BaseActivity() {
     private var pendingFocusHeaderAfterExpand: Boolean = false
     private var tabSwitchRequestToken: Int = 0
 
-    private val loadedArchiveBvids = HashSet<String>()
+    private val loadedArchiveStableKeys = HashSet<String>()
     private var archiveIsLoadingMore: Boolean = false
     private var archiveEndReached: Boolean = false
     private var archiveNextPage: Int = 1
@@ -282,24 +289,45 @@ class UpDetailActivity : BaseActivity() {
     }
 
     private fun setupAdapters() {
+        val archiveActionController =
+            VideoCardActionController(
+                context = this,
+                scope = lifecycleScope,
+                dismissBehavior = VideoCardDismissBehavior.LocalNotInterested,
+                onOpenDetail = { _, pos ->
+                    openVideoDetailFromPlaybackHandle(
+                        playbackHandle = archivePlaybackHandle(),
+                        position = pos,
+                    )
+                },
+                onOpenUp = { card -> openUpDetailForCard(card) },
+                onCardRemoved = { stableKey ->
+                    binding.recycler.removeVideoCardAndRestoreFocus(
+                        adapter = archiveAdapter,
+                        stableKey = stableKey,
+                        isAlive = { !isFinishing && !isDestroyed && currentTab == UpTab.ARCHIVE },
+                    )
+                },
+            )
         archiveAdapter =
             VideoCardAdapter(
                 onClick = { _, pos ->
-                    openVideoFromCards(
-                        cards = archiveAdapter.snapshot(),
-                        index = pos,
-                        source = "UpDetail:$mid:archive",
+                    openVideoFromPlaybackHandle(
+                        playbackHandle = archivePlaybackHandle(),
+                        position = pos,
+                        openDetailBeforePlay = BiliClient.prefs.playerOpenDetailBeforePlay,
                     )
                 },
+                actionDelegate = archiveActionController,
             )
 
         sectionAdapter =
             UpDetailSectionAdapter(
                 onVideoClick = { section, _, index ->
-                    openVideoFromCards(
-                        cards = section.videos,
-                        index = index,
-                        source = "UpDetail:$mid:${section.stableId}",
+                    openVideoFromPlaybackHandle(
+                        playbackHandle = buildSectionPlaybackHandle(section),
+                        position = index,
+                        openDetailBeforePlay = BiliClient.prefs.playerOpenDetailBeforePlay,
                     )
                 },
                 onRequestLoadMore = { section, requestedNextIndex ->
@@ -626,7 +654,7 @@ class UpDetailActivity : BaseActivity() {
             }
         }
         archiveRequestToken++
-        loadedArchiveBvids.clear()
+        loadedArchiveStableKeys.clear()
         archiveNextPage = 1
         archiveEndReached = false
         archiveIsLoadingMore = false
@@ -654,8 +682,9 @@ class UpDetailActivity : BaseActivity() {
                 archiveNextPage = targetPage + 1
                 archiveEndReached = page.items.isEmpty() || !page.hasMore
 
-                val filtered = page.items.filter { loadedArchiveBvids.add(it.bvid) }
-                if (isRefresh) archiveAdapter.submit(filtered) else archiveAdapter.append(filtered)
+                val visibleItems = VideoCardVisibilityFilter.filterVisibleFresh(page.items, loadedArchiveStableKeys)
+                visibleItems.forEach { loadedArchiveStableKeys.add(it.stableKey()) }
+                if (isRefresh) archiveAdapter.submit(visibleItems) else archiveAdapter.append(visibleItems)
 
                 binding.recycler.post {
                     maybeConsumePendingFocusFirstContentAfterLoad()
@@ -724,18 +753,41 @@ class UpDetailActivity : BaseActivity() {
 
     private data class SectionArchivesParsedPage(
         val totalCount: Int?,
-        val videos: List<blbl.cat3399.core.model.VideoCard>,
+        val videos: List<VideoCard>,
     )
 
-    private fun parseSectionArchivesPage(json: JSONObject, ownerFallback: String): SectionArchivesParsedPage {
-        val data = json.optJSONObject("data") ?: JSONObject()
-        val total = data.optJSONObject("page")?.optInt("total", 0)?.takeIf { it > 0 }
-        val archives = data.optJSONArray("archives") ?: JSONArray()
-        val videos = parseVideoCardsFromArchives(archives, ownerFallback = ownerFallback)
-        return SectionArchivesParsedPage(totalCount = total, videos = videos)
+    private fun List<VideoCard>.withOwnerFallback(ownerFallback: String): List<VideoCard> {
+        if (ownerFallback.isBlank()) return this
+        return map { card ->
+            if (card.ownerName.isBlank()) card.copy(ownerName = ownerFallback) else card
+        }
     }
 
-    private fun appendVideosToSectionInMemory(sectionStableId: String, videos: List<blbl.cat3399.core.model.VideoCard>): UpDetailSection? {
+    private fun VideoCollectionSection.toUpDetailSection(ownerFallback: String): UpDetailSection =
+        UpDetailSection(
+            kind =
+                when (kind) {
+                    VideoCollectionKind.SEASON -> UpDetailSectionKind.SEASON
+                    VideoCollectionKind.SERIES -> UpDetailSectionKind.SERIES
+                },
+            id = id,
+            title = title,
+            totalCount = totalCount,
+            videos = items.withOwnerFallback(ownerFallback),
+        )
+
+    private fun sectionArchivesPage(
+        total: Int,
+        videos: List<VideoCard>,
+        ownerFallback: String,
+    ): SectionArchivesParsedPage {
+        return SectionArchivesParsedPage(
+            totalCount = total.takeIf { it > 0 },
+            videos = videos.withOwnerFallback(ownerFallback),
+        )
+    }
+
+    private fun appendVideosToSectionInMemory(sectionStableId: String, videos: List<VideoCard>): UpDetailSection? {
         if (videos.isEmpty()) return null
         val idx = seasonsSeriesSections.indexOfFirst { it.stableId == sectionStableId }
         if (idx < 0) return null
@@ -753,38 +805,39 @@ class UpDetailActivity : BaseActivity() {
         val ownerFallback = binding.tvName.text?.toString().orEmpty().trim()
         lifecycleScope.launch {
             try {
-                val json =
-                    when (section.kind) {
-                        UpDetailSectionKind.SEASON ->
-                            BiliApi.seasonsArchivesList(
-                                mid = mid,
-                                seasonId = section.id,
-                                pageNum = targetPage,
-                                pageSize = 30,
-                                sortReverse = false,
-                            )
-
-                        UpDetailSectionKind.SERIES ->
-                            BiliApi.seriesArchives(
-                                mid = mid,
-                                seriesId = section.id,
-                                pageNum = targetPage,
-                                pageSize = 20,
-                                sort = "desc",
-                                onlyNormal = true,
-                            )
-                    }
-                if (token != seasonsSeriesRequestToken) return@launch
-
-                val code = json.optInt("code", 0)
-                if (code != 0) {
-                    val msg = json.optString("message", json.optString("msg", "")).ifBlank { "加载失败" }
-                    throw BiliApiException(apiCode = code, apiMessage = msg)
-                }
-
                 val parsed =
-                    withContext(Dispatchers.Default) {
-                        parseSectionArchivesPage(json, ownerFallback = ownerFallback)
+                    when (section.kind) {
+                        UpDetailSectionKind.SEASON -> {
+                            val page =
+                                BiliApi.ugcSeasonArchives(
+                                    mid = mid,
+                                    seasonId = section.id,
+                                    pageNum = targetPage,
+                                    pageSize = 30,
+                                    sortReverse = false,
+                                )
+                            SectionArchivesParsedPage(
+                                totalCount = page.totalCount,
+                                videos = page.items.withOwnerFallback(ownerFallback),
+                            )
+                        }
+
+                        UpDetailSectionKind.SERIES -> {
+                            val page =
+                                BiliApi.seriesArchives(
+                                    mid = mid,
+                                    seriesId = section.id,
+                                    pageNum = targetPage,
+                                    pageSize = 20,
+                                    sort = "desc",
+                                    onlyNormal = true,
+                                )
+                            sectionArchivesPage(
+                                total = page.total,
+                                videos = page.items,
+                                ownerFallback = ownerFallback,
+                            )
+                        }
                     }
                 if (token != seasonsSeriesRequestToken) return@launch
 
@@ -834,11 +887,6 @@ class UpDetailActivity : BaseActivity() {
         }
     }
 
-    private data class SeasonsSeriesParsedPage(
-        val totalPages: Int,
-        val sections: List<UpDetailSection>,
-    )
-
     private fun loadMoreSeasonsSeries(isRefresh: Boolean = false) {
         if (seasonsSeriesIsLoadingMore || seasonsSeriesEndReached) return
         val token = seasonsSeriesRequestToken
@@ -847,19 +895,7 @@ class UpDetailActivity : BaseActivity() {
         val ownerFallback = binding.tvName.text?.toString().orEmpty().trim()
         lifecycleScope.launch {
             try {
-                val json = BiliApi.seasonsSeriesList(mid = mid, pageNum = targetPage, pageSize = 10)
-                if (token != seasonsSeriesRequestToken) return@launch
-
-                val code = json.optInt("code", 0)
-                if (code != 0) {
-                    val msg = json.optString("message", json.optString("msg", "")).ifBlank { "加载失败" }
-                    throw BiliApiException(apiCode = code, apiMessage = msg)
-                }
-
-                val parsed =
-                    withContext(Dispatchers.Default) {
-                        parseSeasonsSeriesPage(json, ownerFallback = ownerFallback)
-                    }
+                val parsed = BiliApi.collectionSections(mid = mid, pageNum = targetPage, pageSize = 10)
                 if (token != seasonsSeriesRequestToken) return@launch
 
                 val hasAny = parsed.sections.isNotEmpty()
@@ -871,7 +907,8 @@ class UpDetailActivity : BaseActivity() {
                     }
 
                 val inserted = ArrayList<UpDetailSection>(parsed.sections.size)
-                for (section in parsed.sections) {
+                for (apiSection in parsed.sections) {
+                    val section = apiSection.toUpDetailSection(ownerFallback = ownerFallback)
                     if (!loadedSectionStableIds.add(section.stableId)) continue
                     seasonsSeriesSections.add(section)
                     inserted.add(section)
@@ -898,115 +935,6 @@ class UpDetailActivity : BaseActivity() {
                 seasonsSeriesIsLoadingMore = false
             }
         }
-    }
-
-    private fun parseSeasonsSeriesPage(json: JSONObject, ownerFallback: String): SeasonsSeriesParsedPage {
-        val itemsLists =
-            json.optJSONObject("data")
-                ?.optJSONObject("items_lists")
-                ?: JSONObject()
-        val pageObj = itemsLists.optJSONObject("page") ?: JSONObject()
-        val totalPages = pageObj.optInt("total", 0).coerceAtLeast(0)
-        val seasons = itemsLists.optJSONArray("seasons_list") ?: JSONArray()
-        val series = itemsLists.optJSONArray("series_list") ?: JSONArray()
-
-        fun parseSectionsArray(arr: JSONArray, kind: UpDetailSectionKind): List<UpDetailSection> {
-            val out = ArrayList<UpDetailSection>(arr.length())
-            for (i in 0 until arr.length()) {
-                val obj = arr.optJSONObject(i) ?: continue
-                val meta = obj.optJSONObject("meta") ?: JSONObject()
-                val id =
-                    when (kind) {
-                        UpDetailSectionKind.SEASON -> meta.optLong("season_id").takeIf { it > 0 }
-                        UpDetailSectionKind.SERIES -> meta.optLong("series_id").takeIf { it > 0 }
-                    } ?: continue
-                val title = meta.optString("name", "").trim().takeIf { it.isNotBlank() } ?: continue
-                val total = meta.optInt("total", 0).takeIf { it > 0 }
-                val archives = obj.optJSONArray("archives") ?: JSONArray()
-                val videos = parseVideoCardsFromArchives(archives, ownerFallback = ownerFallback)
-                if (videos.isEmpty()) continue
-                out.add(
-                    UpDetailSection(
-                        kind = kind,
-                        id = id,
-                        title = title,
-                        totalCount = total,
-                        videos = videos,
-                    ),
-                )
-            }
-            return out
-        }
-
-        return SeasonsSeriesParsedPage(
-            totalPages = totalPages,
-            sections =
-                buildList {
-                    addAll(parseSectionsArray(seasons, kind = UpDetailSectionKind.SEASON))
-                    addAll(parseSectionsArray(series, kind = UpDetailSectionKind.SERIES))
-                },
-        )
-    }
-
-    private fun parseVideoCardsFromArchives(arr: JSONArray, ownerFallback: String): List<blbl.cat3399.core.model.VideoCard> {
-        val out = ArrayList<blbl.cat3399.core.model.VideoCard>(arr.length())
-
-        fun parseDurationSec(obj: JSONObject): Int {
-            val byInt = obj.optInt("duration", 0).takeIf { it > 0 }
-            if (byInt != null) return byInt
-            val text = obj.optString("duration_text", obj.optString("duration", "0:00"))
-            return BiliApi.parseDuration(text)
-        }
-
-        for (i in 0 until arr.length()) {
-            val obj = arr.optJSONObject(i) ?: continue
-            val bvid = obj.optString("bvid", "").trim()
-            if (bvid.isBlank()) continue
-            val aid = obj.optLong("aid").takeIf { it > 0 }
-            val cid = obj.optLong("cid").takeIf { it > 0 }
-            val title = obj.optString("title", "").trim().ifBlank { "视频 ${i + 1}" }
-            val cover = obj.optString("pic", obj.optString("cover", "")).trim()
-
-            val ownerObj = obj.optJSONObject("owner") ?: JSONObject()
-            val ownerName =
-                ownerObj.optString("name", "").trim().ifBlank {
-                    obj.optString("author", "").trim()
-                }.ifBlank {
-                    ownerFallback
-                }
-            val ownerFace = ownerObj.optString("face", "").trim().takeIf { it.isNotBlank() }
-            val ownerMid =
-                ownerObj.optLong("mid").takeIf { it > 0 }
-                    ?: obj.optLong("mid").takeIf { it > 0 }
-
-            val statObj = obj.optJSONObject("stat") ?: JSONObject()
-            val view =
-                statObj.optLong("view").takeIf { it > 0 }
-                    ?: statObj.optLong("play").takeIf { it > 0 }
-            val danmaku =
-                statObj.optLong("danmaku").takeIf { it > 0 }
-                    ?: statObj.optLong("dm").takeIf { it > 0 }
-            val pubDate = obj.optLong("pubdate").takeIf { it > 0 }
-
-            out.add(
-                blbl.cat3399.core.model.VideoCard(
-                    bvid = bvid,
-                    cid = cid,
-                    aid = aid,
-                    title = title,
-                    coverUrl = cover,
-                    durationSec = parseDurationSec(obj),
-                    ownerName = ownerName,
-                    ownerFace = ownerFace,
-                    ownerMid = ownerMid,
-                    view = view,
-                    danmaku = danmaku,
-                    pubDate = pubDate,
-                    pubDateText = null,
-                ),
-            )
-        }
-        return out
     }
 
     private fun onFollowClicked() {
@@ -1229,50 +1157,103 @@ class UpDetailActivity : BaseActivity() {
         return true
     }
 
-    private fun openVideoFromCards(cards: List<blbl.cat3399.core.model.VideoCard>, index: Int, source: String) {
-        if (cards.isEmpty()) return
-        val pos = index.coerceIn(0, cards.size - 1)
-        val card = cards[pos]
-        val playlistItems =
-            cards.map {
-                PlayerPlaylistItem(
-                    bvid = it.bvid,
-                    cid = it.cid,
-                    title = it.title,
-                )
-            }
-        val token =
-            PlayerPlaylistStore.put(
-                items = playlistItems,
-                index = pos,
-                source = source,
-                uiCards = cards,
-            )
-        if (BiliClient.prefs.playerOpenDetailBeforePlay) {
-            startActivity(
-                Intent(this, VideoDetailActivity::class.java)
-                    .putExtra(VideoDetailActivity.EXTRA_BVID, card.bvid)
-                    .putExtra(VideoDetailActivity.EXTRA_CID, card.cid ?: -1L)
-                    .apply { card.aid?.let { putExtra(VideoDetailActivity.EXTRA_AID, it) } }
-                    .putExtra(VideoDetailActivity.EXTRA_TITLE, card.title)
-                    .putExtra(VideoDetailActivity.EXTRA_COVER_URL, card.coverUrl)
-                    .apply {
-                        card.ownerName.takeIf { it.isNotBlank() }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_NAME, it) }
-                        card.ownerFace?.takeIf { it.isNotBlank() }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_AVATAR, it) }
-                        card.ownerMid?.takeIf { it > 0L }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_MID, it) }
-                    }
-                    .putExtra(VideoDetailActivity.EXTRA_PLAYLIST_TOKEN, token)
-                    .putExtra(VideoDetailActivity.EXTRA_PLAYLIST_INDEX, pos),
-            )
-        } else {
-            startActivity(
-                Intent(this, PlayerActivity::class.java)
-                    .putExtra(PlayerActivity.EXTRA_BVID, card.bvid)
-                    .putExtra(PlayerActivity.EXTRA_CID, card.cid ?: -1L)
-                    .putExtra(PlayerActivity.EXTRA_PLAYLIST_TOKEN, token)
-                    .putExtra(PlayerActivity.EXTRA_PLAYLIST_INDEX, pos),
+    private fun archivePlaybackHandle() =
+        buildPagedVideoCardPlaybackHandle(
+            source = "UpDetail:$mid:archive",
+            cardsProvider = archiveAdapter::snapshot,
+            nextCursorProvider = { archiveNextPage },
+            hasMoreProvider = { !archiveEndReached },
+        ) { pageNum ->
+            val targetPage = pageNum.coerceAtLeast(1)
+            val page = BiliApi.spaceArcSearchPage(mid = mid, pn = targetPage, ps = 30)
+            VideoCardPlaylistPage(
+                cards = page.items,
+                nextCursor = targetPage + 1,
+                hasMore = page.hasMore,
+                canAdvance = page.hasMore && page.items.isNotEmpty(),
             )
         }
+
+    private fun buildSectionPlaybackHandle(section: UpDetailSection) =
+        buildVideoCardPlaybackHandle(
+            source = "UpDetail:$mid:${section.stableId}",
+            cardsProvider = { section.videos },
+        ) { cards ->
+            buildSectionPlaylistContinuation(section, cards)
+        }
+
+    private fun buildSectionPlaylistContinuation(
+        section: UpDetailSection,
+        cards: List<VideoCard>,
+    ): PlayerPlaylistContinuation? {
+        val state = sectionPagingStates[section.stableId] ?: return null
+        val pageSize = if (section.kind == UpDetailSectionKind.SEASON) 30 else 20
+        val ownerFallback = binding.tvName.text?.toString().orEmpty().trim()
+        return buildFreshVideoCardPlaylistContinuation(
+            seedCards = cards,
+            nextCursor = state.nextPage,
+            hasMore = !state.endReached,
+            playlistItemFactory = ::defaultVideoCardPlaylistItem,
+        ) { pageNum ->
+            val safePageNum = pageNum.coerceAtLeast(1)
+            val parsedPage =
+                when (section.kind) {
+                    UpDetailSectionKind.SEASON -> {
+                        val page =
+                            BiliApi.ugcSeasonArchives(
+                                mid = mid,
+                                seasonId = section.id,
+                                pageNum = safePageNum,
+                                pageSize = pageSize,
+                                sortReverse = false,
+                            )
+                        SectionArchivesParsedPage(
+                            totalCount = page.totalCount,
+                            videos = page.items.withOwnerFallback(ownerFallback),
+                        )
+                    }
+
+                    UpDetailSectionKind.SERIES -> {
+                        val page =
+                            BiliApi.seriesArchives(
+                                mid = mid,
+                                seriesId = section.id,
+                                pageNum = safePageNum,
+                                pageSize = pageSize,
+                                sort = "desc",
+                                onlyNormal = true,
+                            )
+                        sectionArchivesPage(
+                            total = page.total,
+                            videos = page.items,
+                            ownerFallback = ownerFallback,
+                        )
+                    }
+                }
+            val totalCount = parsedPage.totalCount ?: state.totalCount
+            val hasMore =
+                totalCount?.let { safePageNum * pageSize < it }
+                    ?: (parsedPage.videos.size >= pageSize)
+            VideoCardPlaylistPage(
+                cards = parsedPage.videos,
+                nextCursor = safePageNum + 1,
+                hasMore = hasMore,
+                canAdvance = hasMore && parsedPage.videos.isNotEmpty(),
+            )
+        }
+    }
+
+    private fun openUpDetailForCard(card: blbl.cat3399.core.model.VideoCard) {
+        val targetMid = card.ownerMid?.takeIf { it > 0L } ?: mid
+        if (targetMid == mid) return
+        startActivity(
+            Intent(this, UpDetailActivity::class.java)
+                .putExtra(EXTRA_MID, targetMid)
+                .apply {
+                    card.ownerName.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_NAME, it) }
+                    card.ownerFace?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_AVATAR, it) }
+                },
+        )
     }
 
     private fun spanCountForWidth(): Int {

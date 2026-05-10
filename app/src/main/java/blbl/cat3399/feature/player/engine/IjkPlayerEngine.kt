@@ -2,9 +2,11 @@ package blbl.cat3399.feature.player.engine
 
 import android.content.Context
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.Surface
 import androidx.media3.common.Player
 import blbl.cat3399.BuildConfig
+import blbl.cat3399.core.api.video.VideoMediaRequestProfile
 import blbl.cat3399.core.log.AppLog
 import blbl.cat3399.core.net.BiliClient
 import blbl.cat3399.feature.player.Playable
@@ -23,12 +25,14 @@ internal class IjkPlayerEngine(
     private val listeners: MutableSet<BlblPlayerEngine.Listener> = CopyOnWriteArraySet()
 
     private var ijk: IjkMediaPlayer? = null
-    private var dashProxy: DashLocalHttpProxy? = null
     private var prepared: Boolean = false
     private var buffering: Boolean = false
     private var preparing: Boolean = false
     private var prepareRequested: Boolean = false
     private var pendingSeekMs: Long? = null
+    private var visibleSeekPositionMs: Long? = null
+    private var visibleSeekStartedAtMs: Long = 0L
+    private var visibleSeekClearsOnFirstFrame: Boolean = false
 
     private var playbackStateInternal: Int = Player.STATE_IDLE
     private var playWhenReadyInternal: Boolean = false
@@ -53,15 +57,7 @@ internal class IjkPlayerEngine(
         set(value) {
             playWhenReadyInternal = value
             val p = ijk ?: return
-            if (!prepared) return
-            runCatching {
-                if (value) {
-                    p.start()
-                } else {
-                    p.pause()
-                }
-            }
-            notifyIsPlayingIfChanged()
+            syncPlayWhenReadyToNative(p)
         }
 
     override val duration: Long
@@ -75,17 +71,20 @@ internal class IjkPlayerEngine(
         }
 
     override val currentPosition: Long
-        get() = ijk?.currentPosition ?: 0L
+        get() = visibleSeekPositionOrNull() ?: ijk?.currentPosition?.coerceAtLeast(0L) ?: 0L
 
     override val bufferedPosition: Long
         get() {
             val p = ijk ?: return 0L
+            visibleSeekPositionOrNull()?.let { seekPosition ->
+                return duration.takeIf { it > 0L }?.let { seekPosition.coerceIn(0L, it) } ?: seekPosition
+            }
             val pos = p.currentPosition.coerceAtLeast(0L)
             val vCache = p.videoCachedDuration.coerceAtLeast(0L)
             val aCache = p.audioCachedDuration.coerceAtLeast(0L)
             // For DASH (separate A/V), the truly playable buffered window is usually bounded by the slower track.
-            // Use a conservative estimate to avoid over-reporting bufferedPosition, which can cause "soft seek"
-            // to be chosen and later clamped back to the real buffer end.
+            // Keep this estimate conservative so diagnostics reflect the real playable window instead of an
+            // optimistic union of the two tracks.
             val cachedForwardMs =
                 when {
                     vCache > 0L && aCache > 0L -> minOf(vCache, aCache)
@@ -116,6 +115,7 @@ internal class IjkPlayerEngine(
     override fun seekTo(positionMs: Long) {
         val p = ijk ?: return
         val pos = positionMs.coerceAtLeast(0L)
+        val leavesEndedState = seekLeavesEndedState(pos)
         val vod = source as? PlaybackSource.Vod
         val dash = vod?.playable as? Playable.Dash
         if (!prepared) {
@@ -124,32 +124,38 @@ internal class IjkPlayerEngine(
             if (dash != null) {
                 pendingSeekMs = null
                 runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "seek-at-start", pos) }
+                    .onSuccess { markVisibleSeekPosition(pos, clearsOnFirstFrame = true) }
             } else {
                 pendingSeekMs = pos
+                markVisibleSeekPosition(pos, clearsOnFirstFrame = false)
             }
             return
         }
         if (dash == null) {
             runCatching { p.seekTo(pos) }
+                .onSuccess {
+                    markVisibleSeekPosition(pos, clearsOnFirstFrame = false)
+                    handleSeekLeavesEndedState(p, leavesEndedState)
+                }
+                .onFailure { clearVisibleSeekPosition() }
             return
         }
 
-        val buf = bufferedPosition
-        val shouldHardSeek = pos > (buf + HARD_SEEK_BUFFER_GAP_MS)
         if (BuildConfig.DEBUG) {
+            val buf = bufferedPosition
             val vCache = p.videoCachedDuration.coerceAtLeast(0L)
             val aCache = p.audioCachedDuration.coerceAtLeast(0L)
             AppLog.i(
                 "IjkEngine",
-                "seek dash to=${pos}ms cur=${p.currentPosition.coerceAtLeast(0L)}ms buf=${buf}ms vCache=${vCache}ms aCache=${aCache}ms mode=${if (shouldHardSeek) "hard" else "soft"}",
+                "seek dash to=${pos}ms cur=${p.currentPosition.coerceAtLeast(0L)}ms buf=${buf}ms vCache=${vCache}ms aCache=${aCache}ms mode=native",
             )
         }
-        if (!shouldHardSeek) {
-            runCatching { p.seekTo(pos) }
-            return
-        }
-
-        hardSeekDashTo(pos, reason = "out_of_buffer")
+        runCatching { p.seekTo(pos) }
+            .onSuccess {
+                markVisibleSeekPosition(pos, clearsOnFirstFrame = false)
+                handleSeekLeavesEndedState(p, leavesEndedState)
+            }
+            .onFailure { clearVisibleSeekPosition() }
     }
 
     override val playbackSpeed: Float
@@ -182,6 +188,7 @@ internal class IjkPlayerEngine(
         preparing = false
         prepareRequested = false
         pendingSeekMs = null
+        clearVisibleSeekPosition()
         updateState(Player.STATE_IDLE)
 
         runCatching { ensurePlayer() }.onFailure { t ->
@@ -195,13 +202,8 @@ internal class IjkPlayerEngine(
         prepared = false
         buffering = false
         preparing = false
+        clearVisibleSeekPosition()
         updateState(Player.STATE_IDLE)
-
-        val needDashProxy = dataSource is PlaybackSource.Vod && dataSource.playable is Playable.Dash
-        if (!needDashProxy) {
-            dashProxy?.stop()
-            dashProxy = null
-        }
 
         applyCommonOptions(p)
         runCatching { p.setSurface(videoSurface) }
@@ -211,7 +213,11 @@ internal class IjkPlayerEngine(
         try {
             when (dataSource) {
                 is PlaybackSource.Live -> {
-                    val headers = buildHttpHeaders(urlForCookie = dataSource.url)
+                    val headers =
+                        IjkHttpHeaderBuilder.build(
+                            urlForCookie = dataSource.url,
+                            mediaRequestProfile = VideoMediaRequestProfile.WEB,
+                        )
                     applyHttpOptions(p, headers)
                     p.setDataSource(dataSource.url)
                 }
@@ -219,43 +225,51 @@ internal class IjkPlayerEngine(
                 is PlaybackSource.Vod -> {
                     when (val playable = dataSource.playable) {
                         is Playable.Dash -> {
-                            val proxy =
-                                dashProxy ?: DashLocalHttpProxy(okHttpClient = BiliClient.cdnOkHttp).also { dashProxy = it }
-                            proxy.resetRegistrations()
-                            val videoBaseUrl = proxy.register(kind = "v", upstreamUrl = playable.videoUrl)
-                            val audioBaseUrl = proxy.register(kind = "a", upstreamUrl = playable.audioUrl)
                             val mpdFile =
                                 writeDashMpd(
                                     playable,
                                     durationMs = dataSource.durationMs,
-                                    videoBaseUrl = videoBaseUrl,
-                                    audioBaseUrl = audioBaseUrl,
                                 )
                             if (BuildConfig.DEBUG) {
                                 val vLen = playable.videoUrl.length
                                 val aLen = playable.audioUrl.length
                                 AppLog.i(
                                     "IjkEngine",
-                                    "dash mpd=${mpdFile.name} bytes=${mpdFile.length()} vUrlLen=$vLen aUrlLen=$aLen proxyPort=${proxy.port}",
+                                    "dash source mode=direct mpd=${mpdFile.name} bytes=${mpdFile.length()} vUrlLen=$vLen aUrlLen=$aLen",
                                 )
                                 if (vLen > 1024 || aLen > 1024) {
-                                    AppLog.w("IjkEngine", "DASH segment url is very long (>1024). If playback fails, consider ijkffmpeg dashdec long-url support.")
+                                    AppLog.w(
+                                        "IjkEngine",
+                                        "DASH segment url is very long (>1024). If playback fails, consider ijkffmpeg dashdec long-url support.",
+                                    )
                                 }
                             }
-                            val headers = buildHttpHeaders(urlForCookie = playable.videoUrl)
+                            val headers =
+                                IjkHttpHeaderBuilder.build(
+                                    urlForCookie = playable.videoUrl,
+                                    mediaRequestProfile = playable.videoMediaRequestProfile,
+                                )
                             applyHttpOptions(p, headers)
                             // Use a plain file path to avoid ContentResolver/fd:// schemes.
                             p.setDataSource(mpdFile.absolutePath)
                         }
 
                         is Playable.VideoOnly -> {
-                            val headers = buildHttpHeaders(urlForCookie = playable.videoUrl)
+                            val headers =
+                                IjkHttpHeaderBuilder.build(
+                                    urlForCookie = playable.videoUrl,
+                                    mediaRequestProfile = playable.videoMediaRequestProfile,
+                                )
                             applyHttpOptions(p, headers)
                             p.setDataSource(playable.videoUrl)
                         }
 
                         is Playable.Progressive -> {
-                            val headers = buildHttpHeaders(urlForCookie = playable.url)
+                            val headers =
+                                IjkHttpHeaderBuilder.build(
+                                    urlForCookie = playable.url,
+                                    mediaRequestProfile = playable.mediaRequestProfile,
+                                )
                             applyHttpOptions(p, headers)
                             p.setDataSource(playable.url)
                         }
@@ -265,68 +279,6 @@ internal class IjkPlayerEngine(
         } catch (t: Throwable) {
             listeners.forEach { it.onPlayerError(t) }
         }
-    }
-
-    private fun hardSeekDashTo(positionMs: Long, reason: String) {
-        val p = ijk ?: return
-        val vod = source as? PlaybackSource.Vod ?: run {
-            runCatching { p.seekTo(positionMs) }
-            return
-        }
-        val playable = vod.playable as? Playable.Dash ?: run {
-            runCatching { p.seekTo(positionMs) }
-            return
-        }
-
-        if (BuildConfig.DEBUG) {
-            AppLog.i(
-                "IjkEngine",
-                "hardSeek dash reason=$reason to=${positionMs}ms cur=${currentPosition}ms buf=${bufferedPosition}ms",
-            )
-        }
-
-        val proxy =
-            dashProxy ?: DashLocalHttpProxy(okHttpClient = BiliClient.cdnOkHttp).also { dashProxy = it }
-        val videoBaseUrl = proxy.register(kind = "v", upstreamUrl = playable.videoUrl)
-        val audioBaseUrl = proxy.register(kind = "a", upstreamUrl = playable.audioUrl)
-        val mpdFile =
-            runCatching {
-                writeDashMpd(
-                    playable,
-                    durationMs = vod.durationMs,
-                    videoBaseUrl = videoBaseUrl,
-                    audioBaseUrl = audioBaseUrl,
-                )
-            }.getOrElse { t ->
-                listeners.forEach { it.onPlayerError(t) }
-                return
-            }
-
-        pendingSeekMs = null
-        prepared = false
-        buffering = false
-        preparing = false
-        updateState(Player.STATE_IDLE)
-
-        runCatching { p.reset() }.onFailure { AppLog.w("IjkEngine", "reset for hardSeek failed", it) }
-        applyCommonOptions(p)
-        runCatching { p.setSurface(videoSurface) }
-        runCatching { p.setLooping(repeatModeInternal == Player.REPEAT_MODE_ONE) }
-        runCatching { p.setSpeed(playbackSpeedInternal) }
-
-        val headers = buildHttpHeaders(urlForCookie = playable.videoUrl)
-        applyHttpOptions(p, headers)
-        runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "seek-at-start", positionMs) }
-
-        runCatching { p.setDataSource(mpdFile.absolutePath) }
-            .onFailure { t ->
-                listeners.forEach { it.onPlayerError(t) }
-                return
-            }
-
-        // Ensure prepare will happen.
-        prepareRequested = true
-        startPrepareIfPossible(reason = "hard_seek:$reason")
     }
 
     override fun prepare() {
@@ -350,6 +302,7 @@ internal class IjkPlayerEngine(
         preparing = false
         prepareRequested = false
         pendingSeekMs = null
+        clearVisibleSeekPosition()
         updateState(Player.STATE_IDLE)
     }
 
@@ -361,10 +314,8 @@ internal class IjkPlayerEngine(
         preparing = false
         prepareRequested = false
         pendingSeekMs = null
+        clearVisibleSeekPosition()
         updateState(Player.STATE_IDLE)
-
-        dashProxy?.stop()
-        dashProxy = null
 
         val p = ijk
         ijk = null
@@ -380,6 +331,67 @@ internal class IjkPlayerEngine(
 
     override fun removeListener(listener: BlblPlayerEngine.Listener) {
         listeners.remove(listener)
+    }
+
+    private fun seekLeavesEndedState(positionMs: Long): Boolean {
+        if (playbackStateInternal != Player.STATE_ENDED) return false
+        val d = duration
+        return d <= 0L || positionMs < d
+    }
+
+    private fun markVisibleSeekPosition(positionMs: Long, clearsOnFirstFrame: Boolean) {
+        visibleSeekPositionMs = positionMs.coerceAtLeast(0L)
+        visibleSeekStartedAtMs = SystemClock.elapsedRealtime()
+        visibleSeekClearsOnFirstFrame = clearsOnFirstFrame
+    }
+
+    private fun clearVisibleSeekPosition() {
+        visibleSeekPositionMs = null
+        visibleSeekStartedAtMs = 0L
+        visibleSeekClearsOnFirstFrame = false
+    }
+
+    private fun visibleSeekPositionOrNull(): Long? {
+        val position = visibleSeekPositionMs ?: return null
+        val elapsedMs = SystemClock.elapsedRealtime() - visibleSeekStartedAtMs
+        if (!visibleSeekClearsOnFirstFrame && elapsedMs > VISIBLE_SEEK_POSITION_TIMEOUT_MS) {
+            clearVisibleSeekPosition()
+            return null
+        }
+        return position
+    }
+
+    private fun handleSeekLeavesEndedState(
+        p: IjkMediaPlayer,
+        leavesEndedState: Boolean,
+    ) {
+        if (!leavesEndedState) return
+        updateState(Player.STATE_BUFFERING)
+        syncPlayWhenReadyToNative(p)
+    }
+
+    private fun settleSeekIfReady(p: IjkMediaPlayer) {
+        if (prepared && !buffering && playbackStateInternal == Player.STATE_BUFFERING) {
+            updateState(Player.STATE_READY)
+        }
+        if (playbackStateInternal == Player.STATE_READY) {
+            syncPlayWhenReadyToNative(p)
+        } else {
+            notifyIsPlayingIfChanged()
+        }
+    }
+
+    private fun syncPlayWhenReadyToNative(p: IjkMediaPlayer) {
+        if (prepared) {
+            runCatching {
+                if (playWhenReadyInternal) {
+                    p.start()
+                } else {
+                    p.pause()
+                }
+            }.onFailure { AppLog.w("IjkEngine", "sync playWhenReady failed", it) }
+        }
+        notifyIsPlayingIfChanged()
     }
 
     private fun updateState(state: Int) {
@@ -421,17 +433,19 @@ internal class IjkPlayerEngine(
                     prepared = true
                     buffering = false
                     preparing = false
+                    val preparedSeekMs = pendingSeekMs?.coerceAtLeast(0L)
+                    if (preparedSeekMs != null) {
+                        markVisibleSeekPosition(preparedSeekMs, clearsOnFirstFrame = false)
+                    }
                     updateState(Player.STATE_READY)
                     runCatching { p.setLooping(repeatModeInternal == Player.REPEAT_MODE_ONE) }
                     runCatching { p.setSpeed(playbackSpeedInternal) }
-                    pendingSeekMs?.let { pos ->
+                    preparedSeekMs?.let { target ->
                         pendingSeekMs = null
-                        runCatching { p.seekTo(pos.coerceAtLeast(0L)) }
+                        runCatching { p.seekTo(target) }
+                            .onFailure { clearVisibleSeekPosition() }
                     }
-                    if (playWhenReadyInternal) {
-                        runCatching { p.start() }
-                    }
-                    notifyIsPlayingIfChanged()
+                    syncPlayWhenReadyToNative(p)
                 },
             )
             p.setOnCompletionListener(
@@ -439,6 +453,7 @@ internal class IjkPlayerEngine(
                     prepared = true
                     buffering = false
                     preparing = false
+                    clearVisibleSeekPosition()
                     updateState(Player.STATE_ENDED)
                     notifyIsPlayingIfChanged()
                 },
@@ -449,6 +464,7 @@ internal class IjkPlayerEngine(
                     prepared = false
                     buffering = false
                     preparing = false
+                    clearVisibleSeekPosition()
                     updateState(Player.STATE_IDLE)
                     listeners.forEach { it.onPlayerError(e) }
                     true
@@ -465,9 +481,11 @@ internal class IjkPlayerEngine(
                         IMediaPlayer.MEDIA_INFO_BUFFERING_END -> {
                             buffering = false
                             updateState(if (prepared) Player.STATE_READY else Player.STATE_BUFFERING)
+                            syncPlayWhenReadyToNative(p)
                         }
 
                         IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> {
+                            if (visibleSeekClearsOnFirstFrame) clearVisibleSeekPosition()
                             listeners.forEach { it.onRenderedFirstFrame() }
                         }
 
@@ -475,7 +493,9 @@ internal class IjkPlayerEngine(
                         IMediaPlayer.MEDIA_INFO_VIDEO_SEEK_RENDERING_START,
                         IMediaPlayer.MEDIA_INFO_AUDIO_SEEK_RENDERING_START,
                         -> {
+                            clearVisibleSeekPosition()
                             listeners.forEach { it.onPositionDiscontinuity(currentPosition) }
+                            settleSeekIfReady(p)
                         }
                     }
                     false
@@ -484,6 +504,7 @@ internal class IjkPlayerEngine(
             p.setOnSeekCompleteListener(
                 IMediaPlayer.OnSeekCompleteListener {
                     listeners.forEach { it.onPositionDiscontinuity(currentPosition) }
+                    settleSeekIfReady(p)
                 },
             )
             p.setOnVideoSizeChangedListener(
@@ -506,8 +527,8 @@ internal class IjkPlayerEngine(
                         false
                     },
                 )
-                // Keep IJK native logs at INFO so we can correlate failures when needed.
-                runCatching { IjkMediaPlayer.native_setLogLevel(IjkMediaPlayer.IJK_LOG_INFO) }
+                // Keep DASH/native playback diagnostics visible while validating custom ijk builds.
+                runCatching { IjkMediaPlayer.native_setLogLevel(IjkMediaPlayer.IJK_LOG_DEBUG) }
             }
         }
     }
@@ -592,38 +613,13 @@ internal class IjkPlayerEngine(
         )
     }
 
-    private data class BuiltHttpHeaders(
-        val userAgent: String,
-        val referer: String,
-        val cookie: String?,
-        val headersString: String,
-    )
-
-    private fun buildHttpHeaders(urlForCookie: String): BuiltHttpHeaders {
-        val userAgent = BiliClient.prefs.userAgent.trim().ifBlank { blbl.cat3399.core.prefs.AppPrefs.DEFAULT_UA }
-        val referer = "https://www.bilibili.com/"
-        val cookie = BiliClient.cookies.cookieHeaderFor(urlForCookie)?.trim().takeIf { !it.isNullOrBlank() }
-
-        // NOTE:
-        // - Keep User-Agent in `user_agent` option (not in custom headers) to avoid duplicates.
-        // - Keep Referer in custom headers (not `referer` option) so it propagates to DASH sub-requests via dashdec.
-        val headersString =
-            buildString {
-                append("Referer: ").append(referer).append("\r\n")
-                append("Accept-Encoding: identity\r\n")
-            }
-        return BuiltHttpHeaders(
-            userAgent = userAgent,
-            referer = referer,
-            cookie = cookie,
-            headersString = headersString,
-        )
-    }
-
-    private fun applyHttpOptions(p: IjkMediaPlayer, headers: BuiltHttpHeaders) {
+    private fun applyHttpOptions(p: IjkMediaPlayer, headers: IjkHttpHeaders) {
         // Prefer option-based UA so DASH sub-requests (init/m4s) can inherit it.
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "user_agent", headers.userAgent) }
         runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "user-agent", headers.userAgent) }
+        headers.referer?.let { referer ->
+            runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "referer", referer) }
+        }
         headers.cookie?.let { cookie ->
             runCatching { p.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "cookies", cookie) }
         }
@@ -632,7 +628,8 @@ internal class IjkPlayerEngine(
         if (BuildConfig.DEBUG) {
             AppLog.i(
                 "IjkEngine",
-                "http opts: uaLen=${headers.userAgent.length} referer=${headers.referer} cookie=${if (headers.cookie != null) 1 else 0}",
+                "http opts: profile=${headers.mediaRequestProfile} uaLen=${headers.userAgent.length} " +
+                    "referer=${headers.referer ?: "-"} cookie=${if (headers.cookie != null) 1 else 0}",
             )
         }
     }
@@ -651,9 +648,9 @@ internal class IjkPlayerEngine(
                 -> {
                     if (nativeHttpEventCount < 12) {
                         nativeHttpEventCount++
-                        AppLog.i(
+                        AppLog.d(
                             "IjkHttp",
-                            "event=$what willOpen urlLen=${url.length} url=${url.take(220)}",
+                            "event=$what willOpen urlLen=${url.length}",
                         )
                     }
                 }
@@ -695,6 +692,7 @@ internal class IjkPlayerEngine(
         runCatching { p.prepareAsync() }
             .onFailure { t ->
                 preparing = false
+                clearVisibleSeekPosition()
                 updateState(Player.STATE_IDLE)
                 listeners.forEach { it.onPlayerError(t) }
             }
@@ -704,8 +702,8 @@ internal class IjkPlayerEngine(
     private fun writeDashMpd(
         playable: Playable.Dash,
         durationMs: Long?,
-        videoBaseUrl: String,
-        audioBaseUrl: String,
+        videoBaseUrl: String = playable.videoUrl,
+        audioBaseUrl: String = playable.audioUrl,
     ): File {
         val mpd =
             DashMpdGenerator.buildOnDemandMpd(
@@ -714,21 +712,21 @@ internal class IjkPlayerEngine(
                 videoBaseUrl = videoBaseUrl,
                 audioBaseUrl = audioBaseUrl,
             )
-        val videoSeg = playable.videoTrackInfo.segmentBase ?: error("video segment_base missing")
-        val audioSeg = playable.audioTrackInfo.segmentBase ?: error("audio segment_base missing")
+        val videoSeg = playable.videoTrackInfo.segmentBase
+        val audioSeg = playable.audioTrackInfo.segmentBase
         val key =
             buildString {
                 append(playable.videoUrl)
                 append('|')
                 append(playable.audioUrl)
                 append('|')
-                append(videoSeg.initialization)
+                append(videoSeg?.initialization.orEmpty())
                 append('|')
-                append(videoSeg.indexRange)
+                append(videoSeg?.indexRange.orEmpty())
                 append('|')
-                append(audioSeg.initialization)
+                append(audioSeg?.initialization.orEmpty())
                 append('|')
-                append(audioSeg.indexRange)
+                append(audioSeg?.indexRange.orEmpty())
                 append('|')
                 append(playable.qn)
                 append('|')
@@ -759,7 +757,63 @@ internal class IjkPlayerEngine(
     ) : RuntimeException("IjkMediaPlayer error what=$what extra=$extra")
 
     private companion object {
-        private const val HARD_SEEK_BUFFER_GAP_MS: Long = 200L
         private const val MAX_BUFFERED_FORWARD_ESTIMATE_MS: Long = 5 * 60_000L
+        private const val VISIBLE_SEEK_POSITION_TIMEOUT_MS: Long = 10_000L
+    }
+}
+
+internal data class IjkHttpHeaders(
+    val mediaRequestProfile: VideoMediaRequestProfile,
+    val userAgent: String,
+    val referer: String?,
+    val cookie: String?,
+    val headersString: String,
+)
+
+internal object IjkHttpHeaderBuilder {
+    fun build(
+        urlForCookie: String,
+        mediaRequestProfile: VideoMediaRequestProfile,
+    ): IjkHttpHeaders =
+        when (mediaRequestProfile) {
+            VideoMediaRequestProfile.APP -> buildAppHeaders()
+            VideoMediaRequestProfile.WEB -> buildWebHeaders(urlForCookie)
+        }
+
+    private fun buildAppHeaders(): IjkHttpHeaders {
+        // Keep this aligned with BiliClient.appCdnOkHttp: app playurl CDN URLs reject web
+        // Referer/User-Agent combinations with 403.
+        return IjkHttpHeaders(
+            mediaRequestProfile = VideoMediaRequestProfile.APP,
+            userAgent = BiliClient.APP_CDN_USER_AGENT,
+            referer = null,
+            cookie = null,
+            headersString =
+                buildString {
+                    append("Accept-Encoding: identity\r\n")
+                    append("Connection: Keep-Alive\r\n")
+                },
+        )
+    }
+
+    private fun buildWebHeaders(urlForCookie: String): IjkHttpHeaders {
+        val userAgent = BiliClient.prefs.userAgent.trim().ifBlank { blbl.cat3399.core.prefs.AppPrefs.DEFAULT_UA }
+        val referer = "https://www.bilibili.com/"
+        val cookie = BiliClient.cookies.cookieHeaderFor(urlForCookie)?.trim().takeIf { !it.isNullOrBlank() }
+
+        // NOTE:
+        // - Keep User-Agent in `user_agent` option (not in custom headers) to avoid duplicates.
+        // - Keep Referer in custom headers for old cores, and also set `referer` explicitly for patched dashdec.
+        return IjkHttpHeaders(
+            mediaRequestProfile = VideoMediaRequestProfile.WEB,
+            userAgent = userAgent,
+            referer = referer,
+            cookie = cookie,
+            headersString =
+                buildString {
+                    append("Referer: ").append(referer).append("\r\n")
+                    append("Accept-Encoding: identity\r\n")
+                },
+        )
     }
 }

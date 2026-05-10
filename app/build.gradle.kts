@@ -87,10 +87,20 @@ protobuf {
     protoc {
         artifact = "com.google.protobuf:protoc:3.25.3"
     }
+    plugins {
+        register("grpc") {
+            artifact = "io.grpc:protoc-gen-grpc-java:1.72.0"
+        }
+    }
     generateProtoTasks {
         all().forEach { task ->
             task.builtins {
                 register("java") {
+                    option("lite")
+                }
+            }
+            task.plugins {
+                register("grpc") {
                     option("lite")
                 }
             }
@@ -120,7 +130,11 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.8.0")
     implementation("androidx.media3:media3-datasource-okhttp:1.8.0")
 
-    implementation("com.google.protobuf:protobuf-javalite:3.25.3")
+    implementation("com.google.protobuf:protobuf-javalite:3.25.5")
+    implementation("io.grpc:grpc-okhttp:1.72.0")
+    implementation("io.grpc:grpc-protobuf-lite:1.72.0")
+    implementation("io.grpc:grpc-stub:1.72.0")
+    compileOnly("javax.annotation:javax.annotation-api:1.3.2")
     implementation("com.google.zxing:core:3.5.3")
 
     testImplementation("junit:junit:4.13.2")
@@ -192,7 +206,8 @@ val checkThemeTokens =
                         appendLine("Theme token check failed: layouts must use theme attributes, not fixed palette colors.")
                         appendLine(
                             "Use ?attr/colorOnSurface, ?android:attr/textColorSecondary, ?attr/colorBackground, " +
-                                "?attr/colorSurface, ?attr/blblFocusBgRound, ?attr/blblFocusStrokeColor, etc.",
+                                "?attr/colorSurface, ?attr/blblOnPageBackdrop, ?attr/blblFocusBgRound, " +
+                                "?attr/blblFocusStrokeColor, etc.",
                         )
                         appendLine("Violations:")
                         violations.forEach { appendLine("  $it") }

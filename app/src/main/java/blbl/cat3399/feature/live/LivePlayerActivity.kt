@@ -2,8 +2,8 @@
 
 package blbl.cat3399.feature.live
 
-import android.net.Uri
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -20,6 +20,7 @@ import android.view.ViewGroup
 import android.view.ViewGroup.MarginLayoutParams
 import android.widget.FrameLayout
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleCoroutineScope
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -53,9 +54,14 @@ import blbl.cat3399.core.ui.popup.PopupHost
 import blbl.cat3399.databinding.ActivityPlayerBinding
 import blbl.cat3399.databinding.DialogLiveChatBinding
 import blbl.cat3399.feature.player.AudioBalanceLevel
+import blbl.cat3399.feature.player.PlayerBufferingOverlayController
+import blbl.cat3399.feature.player.PlayerCustomShortcutInputPolicy
 import blbl.cat3399.feature.player.PlayerDebugMetrics
 import blbl.cat3399.feature.player.PlayerOsdSizing
 import blbl.cat3399.feature.player.PlayerSettingsAdapter
+import blbl.cat3399.feature.player.PlayerTouchController
+import blbl.cat3399.feature.player.PlayerTouchGestureHost
+import blbl.cat3399.feature.player.PlayerUpQuickCardController
 import blbl.cat3399.feature.player.PlayerUiMode
 import blbl.cat3399.feature.player.areaText
 import blbl.cat3399.feature.player.danmaku.DanmakuSessionSettings
@@ -69,6 +75,7 @@ import blbl.cat3399.feature.player.engine.IjkPlayerEngine
 import blbl.cat3399.feature.player.engine.LiveHlsDebugInfo
 import blbl.cat3399.feature.player.engine.PlayerEngineKind
 import blbl.cat3399.feature.player.engine.PlaybackSource
+import blbl.cat3399.feature.player.requirePlayerTouchOverlayBinding
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import kotlinx.coroutines.Job
@@ -89,21 +96,25 @@ private object LivePlayerSettingKeys {
 }
 
 class LivePlayerActivity : BaseActivity() {
-    override fun shouldRecreateOnUiScaleChange(): Boolean = false
+    override fun shouldRecreateOnUiScaleChange(): Boolean = true
 
     private lateinit var binding: ActivityPlayerBinding
+    private lateinit var upQuickCard: PlayerUpQuickCardController
+
     private var player: BlblPlayerEngine? = null
     private var ijkRenderView: View? = null
     private var ijkTextureSurface: Surface? = null
     private val settingsPanelReturnFocus = FocusReturn()
     private var autoHideJob: Job? = null
-    private var shortcutHintJob: Job? = null
+    private var seekHintJob: Job? = null
+    private var touchController: PlayerTouchController? = null
     private val shortcutPrevDanmakuOpacityByKey = HashMap<Int, Float>()
     private val shortcutPrevDanmakuTextSizeByKey = HashMap<Int, Float>()
     private val shortcutPrevDanmakuSpeedLevelByKey = HashMap<Int, Int>()
     private val shortcutPrevDanmakuAreaByKey = HashMap<Int, Float>()
     private var debugJob: Job? = null
     private var autoFailoverJob: Job? = null
+    private var liveEntryReportedRoomId: Long = 0L
     private var finishOnBackKeyUp: Boolean = false
     private var controlsVisible: Boolean = false
     private var lastInteractionAtMs: Long = 0L
@@ -114,8 +125,15 @@ class LivePlayerActivity : BaseActivity() {
     private var behindLiveWindowWindowStartAtMs: Long = 0L
     private var behindLiveWindowRecoverCount: Int = 0
     private var behindLiveWindowLastRecoverAtMs: Long = 0L
-    private var bufferingOverlayShowJob: Job? = null
     private var exitRequested: Boolean = false
+    private val bufferingOverlayController: PlayerBufferingOverlayController by lazy {
+        PlayerBufferingOverlayController(
+            context = this,
+            bindingProvider = { if (::binding.isInitialized) binding else null },
+            scope = lifecycleScope,
+            playbackStateProvider = { player?.playbackState },
+        )
+    }
 
     private val doubleBackToExit by lazy {
         DoubleBackToExitHandler(context = this, windowMs = BACK_DOUBLE_PRESS_WINDOW_MS) {
@@ -125,8 +143,10 @@ class LivePlayerActivity : BaseActivity() {
 
     private var roomId: Long = 0L
     private var realRoomId: Long = 0L
+    private var roomUid: Long = 0L
     private var roomTitle: String = ""
     private var roomUname: String = ""
+    private var roomFace: String? = null
 
     private var session: LiveSession = LiveSession()
     private val debug = PlayerDebugMetrics()
@@ -134,6 +154,7 @@ class LivePlayerActivity : BaseActivity() {
 
     private var lastPlay: BiliApi.LivePlayUrl? = null
     private var lastLiveStatus: Int = 0
+    private var transientPlaybackResumeRequested: Boolean? = null
 
     private val chatItems = ArrayDeque<LiveChatAdapter.Item>()
     private val chatMax = 200
@@ -146,12 +167,21 @@ class LivePlayerActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         PlayerOsdSizing.applyTheme(this)
         val prefs = BiliClient.prefs
+        val playerInflater = PlayerOsdSizing.cloneInflater(this, layoutInflater)
         val root =
-            layoutInflater.inflate(
+            playerInflater.inflate(
                 if (prefs.playerRenderViewType == AppPrefs.PLAYER_RENDER_VIEW_TEXTURE_VIEW) blbl.cat3399.R.layout.activity_player_texture else blbl.cat3399.R.layout.activity_player,
                 null,
             )
         binding = ActivityPlayerBinding.bind(root)
+        upQuickCard =
+            PlayerUpQuickCardController(
+                activity = this,
+                binding = binding,
+                isCardVisible = { controlsVisible },
+                keepControlsVisible = { setControlsVisible(true) },
+                beforeOpenUpDetail = { prepareTransientPlaybackExit() },
+            )
         setContentView(binding.root)
         Immersive.apply(this, prefs.fullscreenEnabled)
         PlayerUiMode.applyLive(this, binding)
@@ -204,14 +234,25 @@ class LivePlayerActivity : BaseActivity() {
         binding.btnCoin.visibility = View.GONE
         binding.btnFav.visibility = View.GONE
         binding.btnListPanel.visibility = View.GONE
-        binding.btnComments.visibility = View.GONE
+        binding.btnComments.visibility = View.VISIBLE
 
+        setupUpQuickCard()
         binding.btnBack.setOnClickListener { finish() }
 
         val desiredEngineKind = session.engineKind
         val engineKind =
             if (desiredEngineKind == PlayerEngineKind.IjkPlayer && !IjkPlayerPlugin.isInstalled(this)) {
-                AppToast.showLong(this, "IjkPlayer 插件未安装，已回退到 ExoPlayer")
+                val status = IjkPlayerPlugin.status(this)
+                val text =
+                    if (status == IjkPlayerPlugin.InstallStatus.NeedsUpdate) {
+                        "IjkPlayer 插件需要更新，已临时使用 ExoPlayer"
+                    } else {
+                        "IjkPlayer 插件未安装，已临时使用 ExoPlayer"
+                    }
+                AppToast.showLong(this, text)
+                IjkPlayerPluginUi.ensureInstalled(this) {
+                    if (!isFinishing && !isDestroyed) recreate()
+                }
                 PlayerEngineKind.ExoPlayer
             } else {
                 desiredEngineKind
@@ -229,6 +270,9 @@ class LivePlayerActivity : BaseActivity() {
                         context = this,
                         onTransferHost = { _, host ->
                             debug.videoTransferHost = host
+                        },
+                        onBytesTransferred = { _, bytes ->
+                            recordBufferingTransferBytes(bytes)
                         },
                         onLiveHlsDebugInfo = { info ->
                             liveHlsDebugInfo = info
@@ -289,11 +333,9 @@ class LivePlayerActivity : BaseActivity() {
                     AppLog.e("LivePlayer", "onPlayerError", error)
                     val playbackException = error as? PlaybackException
                     if (playbackException != null && tryRecoverBehindLiveWindow(playbackException)) {
-                        showBufferingOverlay(immediate = true)
                         return
                     }
                     if (tryAutoFailoverOnError(error)) {
-                        showBufferingOverlay(immediate = true)
                         return
                     }
                     resetBufferingOverlayState()
@@ -314,7 +356,10 @@ class LivePlayerActivity : BaseActivity() {
                         debug.rebufferCount++
                     }
                     when (playbackState) {
-                        Player.STATE_BUFFERING -> showBufferingOverlay(immediate = false)
+                        Player.STATE_BUFFERING ->
+                            showBufferingOverlay(
+                                resetSpeedSample = debug.lastPlaybackState != Player.STATE_BUFFERING,
+                            )
                         Player.STATE_READY,
                         Player.STATE_IDLE,
                         Player.STATE_ENDED -> resetBufferingOverlayState()
@@ -343,11 +388,13 @@ class LivePlayerActivity : BaseActivity() {
             if (willShow) {
                 settingsPanelReturnFocus.capture(currentFocus)
                 binding.settingsPanel.visibility = View.VISIBLE
+                onTouchOverlayStateChanged()
                 focusSettingsPanel()
             } else {
                 // Restore focus before hiding the panel to avoid a visible focus "double jump".
                 settingsPanelReturnFocus.restoreAndClear(fallback = binding.btnAdvanced, postOnFail = false)
                 binding.settingsPanel.visibility = View.GONE
+                onTouchOverlayStateChanged()
             }
         }
         binding.btnDanmaku.setOnClickListener {
@@ -356,16 +403,22 @@ class LivePlayerActivity : BaseActivity() {
             updateDanmakuButton()
             setControlsVisible(true)
         }
+        binding.btnComments.setOnClickListener {
+            showChatDialog()
+            setControlsVisible(true)
+        }
 
         binding.playerView.setOnClickListener {
             if (binding.settingsPanel.visibility == View.VISIBLE) {
                 setControlsVisible(true)
                 settingsPanelReturnFocus.restoreAndClear(fallback = binding.btnAdvanced, postOnFail = false)
                 binding.settingsPanel.visibility = View.GONE
+                onTouchOverlayStateChanged()
                 return@setOnClickListener
             }
             toggleControls()
         }
+        initTouchGestures()
 
         binding.root.isFocusableInTouchMode = true
         binding.root.requestFocus()
@@ -379,10 +432,29 @@ class LivePlayerActivity : BaseActivity() {
         lifecycleScope.launch { loadAndPlay(initial = true) }
     }
 
+    private fun prepareTransientPlaybackExit() {
+        val engine = player ?: return
+        val shouldResume = engine.isPlaying || engine.playWhenReady
+        transientPlaybackResumeRequested = shouldResume
+        engine.pause()
+    }
+
+    private fun consumeTransientPlaybackResumeIfNeeded() {
+        val shouldResume = transientPlaybackResumeRequested ?: return
+        transientPlaybackResumeRequested = null
+        if (exitRequested || isFinishing || isDestroyed || isChangingConfigurations) return
+        val engine = player ?: return
+        if (shouldResume) {
+            engine.playWhenReady = true
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         PlayerOsdSizing.applyTheme(this)
         PlayerUiMode.applyLive(this, binding)
+        initTouchGestures()
+        consumeTransientPlaybackResumeIfNeeded()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -390,16 +462,54 @@ class LivePlayerActivity : BaseActivity() {
         if (hasFocus) Immersive.apply(this, BiliClient.prefs.fullscreenEnabled)
     }
 
+    private fun setupUpQuickCard() {
+        binding.btnUpQuickProfile.nextFocusDownId = R.id.btn_play_pause
+        binding.btnUpQuickFollow.nextFocusDownId = R.id.btn_play_pause
+        listOf(
+            binding.btnPlayPause,
+            binding.btnDanmaku,
+            binding.btnComments,
+            binding.btnAdvanced,
+        ).forEach { it.nextFocusUpId = R.id.btn_up_quick_profile }
+        upQuickCard.setupActions()
+        upQuickCard.setOwner(mid = roomUid, name = roomUname, avatar = roomFace)
+        upQuickCard.refreshFollowStateIfNeeded(force = false)
+    }
+
+    private fun updateLiveUpQuickCardOwner(info: BiliApi.LiveRoomInfo) {
+        roomUid = info.uid.takeIf { it > 0L } ?: roomUid
+        roomUname =
+            info.uname
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: roomUname
+        roomFace =
+            info.faceUrl
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: roomFace
+        upQuickCard.setOwner(mid = roomUid, name = roomUname, avatar = roomFace)
+        upQuickCard.refreshFollowStateIfNeeded(force = false)
+    }
+
+    override fun onStop() {
+        touchController?.onStop()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         val t0 = SystemClock.elapsedRealtime()
         AppLog.i("LivePlayer", "activity:onDestroy:start")
+        transientPlaybackResumeRequested = null
         messageClient?.close()
         messageClient = null
-        shortcutHintJob?.cancel()
+        releaseTouchGestures()
+        seekHintJob?.cancel()
         debugJob?.cancel()
         autoFailoverJob?.cancel()
         autoFailoverInFlight = false
         autoHideJob?.cancel()
+        upQuickCard.release()
         resetBufferingOverlayState()
         binding.playerView.player = null
         player?.setVideoSurface(null)
@@ -417,6 +527,7 @@ class LivePlayerActivity : BaseActivity() {
 
     override fun finish() {
         exitRequested = true
+        transientPlaybackResumeRequested = null
         autoFailoverJob?.cancel()
         autoFailoverInFlight = false
         runCatching { player?.pause() }
@@ -639,6 +750,7 @@ class LivePlayerActivity : BaseActivity() {
                 setControlsVisible(true)
                 settingsPanelReturnFocus.restoreAndClear(fallback = binding.btnAdvanced, postOnFail = false)
                 binding.settingsPanel.visibility = View.GONE
+                onTouchOverlayStateChanged()
                 return true
             }
             if (controlsVisible) {
@@ -658,24 +770,52 @@ class LivePlayerActivity : BaseActivity() {
         val keyCode = event.keyCode
         if (keyCode <= 0 || keyCode == KeyEvent.KEYCODE_UNKNOWN) return false
         if (PlayerCustomShortcutsStore.isForbiddenKeyCode(keyCode)) return false
-
-        // Keep DPAD navigation working inside settings panel.
-        if (binding.settingsPanel.visibility == View.VISIBLE) {
-            when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_UP,
-                KeyEvent.KEYCODE_DPAD_DOWN,
-                KeyEvent.KEYCODE_DPAD_LEFT,
-                KeyEvent.KEYCODE_DPAD_RIGHT,
-                KeyEvent.KEYCODE_DPAD_CENTER,
-                KeyEvent.KEYCODE_ENTER,
-                KeyEvent.KEYCODE_NUMPAD_ENTER,
-                -> return false
-            }
+        if (
+            !PlayerCustomShortcutInputPolicy.canDispatchInLive(
+                hasInteractiveOsd = controlsVisible,
+                hasSettingsPanel = binding.settingsPanel.visibility == View.VISIBLE,
+            )
+        ) {
+            return false
         }
 
         val binding = BiliClient.prefs.playerCustomShortcuts.firstOrNull { it.keyCode == keyCode } ?: return false
 
         when (val action = binding.action) {
+            PlayerCustomShortcutAction.ShowOsd -> {
+                noteUserInteraction()
+                setControlsVisible(true)
+                focusFirstControl()
+                return true
+            }
+
+            PlayerCustomShortcutAction.OpenComments -> {
+                noteUserInteraction()
+                showChatDialog()
+                return true
+            }
+
+            PlayerCustomShortcutAction.OpenSettings -> {
+                noteUserInteraction()
+                setControlsVisible(true)
+                if (this.binding.settingsPanel.visibility != View.VISIBLE) {
+                    settingsPanelReturnFocus.capture(currentFocus)
+                    this.binding.settingsPanel.visibility = View.VISIBLE
+                    onTouchOverlayStateChanged()
+                }
+                focusSettingsPanel()
+                return true
+            }
+
+            PlayerCustomShortcutAction.TogglePlayPause -> {
+                noteUserInteraction()
+                val engine = player ?: return true
+                val willPlay = !engine.isPlaying
+                if (willPlay) engine.play() else engine.pause()
+                showSeekHint(if (willPlay) "播放" else "暂停")
+                return true
+            }
+
             PlayerCustomShortcutAction.ToggleDanmaku -> {
                 noteUserInteraction()
                 session = session.copy(danmaku = session.danmaku.copy(enabled = !session.danmaku.enabled))
@@ -739,7 +879,7 @@ class LivePlayerActivity : BaseActivity() {
 
             is PlayerCustomShortcutAction.SetDanmakuArea -> {
                 noteUserInteraction()
-                val target = action.area.takeIf { it.isFinite() }?.coerceIn(0.05f, 1.0f) ?: session.danmaku.area
+                val target = action.area.takeIf { it.isFinite() }?.let(AppPrefs::normalizeLegacyDanmakuAreaCompat) ?: session.danmaku.area
                 val current = session.danmaku.area
                 val next =
                     if (sameFloat(current, target)) {
@@ -770,12 +910,21 @@ class LivePlayerActivity : BaseActivity() {
 
     private fun showShortcutHint(text: String) {
         if (!controlsVisible) setControlsVisible(true)
+        showSeekHint(text, hold = false)
+    }
+
+    private fun showSeekHint(text: String, hold: Boolean = false) {
         binding.tvSeekHint.text = text
         binding.tvSeekHint.visibility = View.VISIBLE
-        shortcutHintJob?.cancel()
-        shortcutHintJob =
+        seekHintJob?.cancel()
+        if (!hold) scheduleHideSeekHint()
+    }
+
+    private fun scheduleHideSeekHint() {
+        seekHintJob?.cancel()
+        seekHintJob =
             lifecycleScope.launch {
-                delay(2_000L)
+                delay(SEEK_HINT_HIDE_DELAY_MS)
                 binding.tvSeekHint.visibility = View.GONE
             }
     }
@@ -957,22 +1106,28 @@ class LivePlayerActivity : BaseActivity() {
     }
 
     private fun toggleControls() {
+        if (isTouchLocked()) return
         val willShow = !controlsVisible
         if (!willShow) binding.settingsPanel.visibility = View.GONE
         setControlsVisible(willShow)
     }
 
     private fun setControlsVisible(visible: Boolean) {
-        controlsVisible = visible
-        val show = visible || binding.settingsPanel.visibility == View.VISIBLE
+        val hadControlsFocus = hasControlsFocus()
+        controlsVisible = visible && !isTouchLocked()
+        val show = controlsVisible || binding.settingsPanel.visibility == View.VISIBLE
         binding.topBar.visibility = if (show) View.VISIBLE else View.GONE
         binding.bottomBar.visibility = if (show) View.VISIBLE else View.GONE
+        upQuickCard.updateUi()
+        if (!show && hadControlsFocus) binding.root.requestFocus()
 
+        onTouchOverlayStateChanged()
         restartAutoHideTimer()
     }
 
     private fun restartAutoHideTimer() {
         autoHideJob?.cancel()
+        if (isTouchLocked()) return
         if (!controlsVisible) return
         if (binding.settingsPanel.visibility == View.VISIBLE) return
         val token = lastInteractionAtMs
@@ -986,8 +1141,15 @@ class LivePlayerActivity : BaseActivity() {
     }
 
     private fun focusFirstControl(): Boolean {
-        if (binding.btnPlayPause.visibility == View.VISIBLE) return binding.btnPlayPause.requestFocus()
-        return binding.btnBack.requestFocus()
+        return requestFocusControlNow(binding.btnPlayPause) || requestFocusControlNow(binding.btnBack)
+    }
+
+    private fun requestFocusControlNow(view: View?): Boolean {
+        val target = view ?: return false
+        if (!target.isShown) return false
+        if (!target.isEnabled) return false
+        if (!target.isFocusable) return false
+        return target.requestFocus()
     }
 
     private fun focusAdvancedControl(): Boolean {
@@ -1012,7 +1174,83 @@ class LivePlayerActivity : BaseActivity() {
 
     private fun hasControlsFocus(): Boolean {
         if (binding.settingsPanel.visibility == View.VISIBLE) return true
-        return binding.topBar.hasFocus() || binding.bottomBar.hasFocus()
+        return binding.topBar.hasFocus() ||
+            binding.cardUpQuick.hasFocus() ||
+            binding.bottomBar.hasFocus()
+    }
+
+    private fun initTouchGestures() {
+        if (!BiliClient.prefs.playerTouchGesturesEnabled) {
+            releaseTouchGestures()
+            return
+        }
+        if (touchController != null) return
+        touchController =
+            PlayerTouchController(createLiveTouchHost(), requirePlayerTouchOverlayBinding(binding)).also { controller ->
+                controller.install()
+            }
+    }
+
+    private fun releaseTouchGestures() {
+        touchController?.release()
+        touchController = null
+    }
+
+    private fun isTouchLocked(): Boolean = touchController?.isTouchLocked() == true
+
+    private fun onTouchOverlayStateChanged() {
+        touchController?.onControlsStateChanged()
+    }
+
+    private fun createLiveTouchHost(): PlayerTouchGestureHost {
+        return object : PlayerTouchGestureHost {
+            override val activity: android.app.Activity
+                get() = this@LivePlayerActivity
+            override val binding: ActivityPlayerBinding
+                get() = this@LivePlayerActivity.binding
+            override val lifecycleScope: LifecycleCoroutineScope
+                get() = this@LivePlayerActivity.lifecycleScope
+            override val player: BlblPlayerEngine?
+                get() = this@LivePlayerActivity.player
+            override val controlsVisibleForTouch: Boolean
+                get() = controlsVisible
+            override val isSidePanelVisible: Boolean
+                get() = this@LivePlayerActivity.binding.settingsPanel.visibility == View.VISIBLE
+            override val isBottomCardPanelVisible: Boolean = false
+            override val isCommentImageViewerVisible: Boolean = false
+
+            override fun setControlsVisibleFromTouch(visible: Boolean) {
+                setControlsVisible(visible)
+            }
+
+            override fun closeSidePanelFromTouch(): Boolean {
+                if (this@LivePlayerActivity.binding.settingsPanel.visibility != View.VISIBLE) return false
+                setControlsVisible(true)
+                settingsPanelReturnFocus.restoreAndClear(fallback = this@LivePlayerActivity.binding.btnAdvanced, postOnFail = false)
+                this@LivePlayerActivity.binding.settingsPanel.visibility = View.GONE
+                onTouchOverlayStateChanged()
+                return true
+            }
+
+            override fun togglePlayPauseFromTouch() {
+                val engine = player ?: return
+                val willPlay = !engine.isPlaying
+                if (willPlay) engine.play() else engine.pause()
+                showSeekHint(if (willPlay) "播放" else "暂停", hold = false)
+            }
+
+            override fun noteUserInteractionFromTouch() {
+                noteUserInteraction()
+            }
+
+            override fun showTouchHint(text: String, hold: Boolean) {
+                showSeekHint(text, hold)
+            }
+
+            override fun scheduleHideTouchHint() {
+                scheduleHideSeekHint()
+            }
+        }
     }
 
     private fun noteUserInteraction() {
@@ -1254,11 +1492,11 @@ class LivePlayerActivity : BaseActivity() {
 
     private suspend fun loadAndPlay(initial: Boolean) {
         val engine = player ?: return
-        showBufferingOverlay(immediate = true)
         try {
             val info = BiliApi.liveRoomInfo(roomId)
             realRoomId = info.roomId
             lastLiveStatus = info.liveStatus
+            updateLiveUpQuickCardOwner(info)
 
             val title = info.title.ifBlank { roomTitle }
             binding.tvTitle.text =
@@ -1299,6 +1537,7 @@ class LivePlayerActivity : BaseActivity() {
             engine.setSource(PlaybackSource.Live(url = pickedLine.url))
             engine.prepare()
             engine.playWhenReady = true
+            reportLiveRoomEntry(realRoomId)
 
             if (initial) connectDanmaku()
         } catch (t: Throwable) {
@@ -1311,30 +1550,16 @@ class LivePlayerActivity : BaseActivity() {
         }
     }
 
-    private fun resetBufferingOverlayState() {
-        bufferingOverlayShowJob?.cancel()
-        bufferingOverlayShowJob = null
-        if (!::binding.isInitialized) return
-        binding.bufferingOverlay.visibility = View.GONE
-        binding.tvBuffering.text = getString(R.string.player_loading)
+    private fun recordBufferingTransferBytes(bytes: Long) {
+        bufferingOverlayController.recordTransferBytes(bytes)
     }
 
-    private fun showBufferingOverlay(immediate: Boolean) {
-        bufferingOverlayShowJob?.cancel()
-        bufferingOverlayShowJob = null
-        if (!::binding.isInitialized) return
-        binding.tvBuffering.text = getString(R.string.player_loading)
-        if (immediate || binding.bufferingOverlay.visibility == View.VISIBLE) {
-            binding.bufferingOverlay.visibility = View.VISIBLE
-            return
-        }
-        bufferingOverlayShowJob =
-            lifecycleScope.launch {
-                delay(BUFFERING_OVERLAY_SHOW_DELAY_MS)
-                bufferingOverlayShowJob = null
-                if (player?.playbackState != Player.STATE_BUFFERING) return@launch
-                binding.bufferingOverlay.visibility = View.VISIBLE
-            }
+    private fun resetBufferingOverlayState() {
+        bufferingOverlayController.reset()
+    }
+
+    private fun showBufferingOverlay(resetSpeedSample: Boolean = true) {
+        bufferingOverlayController.onBufferingStarted(resetSpeedSample = resetSpeedSample)
     }
 
     private fun connectDanmaku() {
@@ -1717,6 +1942,21 @@ class LivePlayerActivity : BaseActivity() {
         }
     }
 
+    private fun reportLiveRoomEntry(roomId: Long) {
+        if (roomId <= 0L || lastLiveStatus != 1) return
+        if (liveEntryReportedRoomId == roomId) return
+        liveEntryReportedRoomId = roomId
+        lifecycleScope.launch {
+            runCatching { BiliApi.liveRoomEntryAction(roomId) }
+                .onSuccess { AppLog.d("LiveReport", "entry ok room=$roomId") }
+                .onFailure { t ->
+                    if (t is CancellationException) throw t
+                    if (liveEntryReportedRoomId == roomId) liveEntryReportedRoomId = 0L
+                    AppLog.w("LiveReport", "entry failed room=$roomId", t)
+                }
+        }
+    }
+
     private fun updateDebugVideoStatsFromCounters(exo: ExoPlayer) {
         val nowMs = SystemClock.elapsedRealtime()
         val counters = exo.videoDecoderCounters ?: return
@@ -1867,7 +2107,7 @@ class LivePlayerActivity : BaseActivity() {
         val restoredDanmakuFontWeight = DanmakuFontWeight.fromPrefValue(obj.optString("danmakuFontWeight", danmaku.fontWeight.prefValue))
         val restoredDanmakuStrokeWidthPx = normalizeDanmakuStrokeWidthPx(optInt("danmakuStrokeWidthPx", danmaku.strokeWidthPx))
         val restoredDanmakuSpeedLevel = optInt("danmakuSpeedLevel", danmaku.speedLevel).coerceIn(1, 10)
-        val restoredDanmakuArea = optFloat("danmakuArea", danmaku.area).coerceIn(0.05f, 1.0f)
+        val restoredDanmakuArea = AppPrefs.normalizeLegacyDanmakuAreaCompat(optFloat("danmakuArea", danmaku.area))
         val restoredDanmakuLaneDensity = DanmakuLaneDensity.fromPrefValue(obj.optString("danmakuLaneDensity", danmaku.laneDensity.prefValue))
         val restoredDebugEnabled = obj.optBoolean("debugEnabled", debugEnabled)
 
@@ -1919,9 +2159,10 @@ class LivePlayerActivity : BaseActivity() {
 
         private const val EXTRA_ENGINE_SWITCH_SESSION_JSON = "engine_switch_session_json"
         private const val LIVE_QN_ORIGINAL = 10_000
+
         private const val AUTO_HIDE_MS = 4_000L
+        private const val SEEK_HINT_HIDE_DELAY_MS = 900L
         private const val BACK_DOUBLE_PRESS_WINDOW_MS = 2_500L
-        private const val BUFFERING_OVERLAY_SHOW_DELAY_MS = 1_000L
         private const val AUTO_FAILOVER_WINDOW_MS = 12_000L
         private const val AUTO_FAILOVER_MIN_INTERVAL_MS = 1_200L
         private const val AUTO_FAILOVER_MAX_SWITCHES = 6

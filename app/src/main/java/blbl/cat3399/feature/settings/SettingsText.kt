@@ -3,9 +3,17 @@ package blbl.cat3399.feature.settings
 import android.app.ActivityManager
 import android.content.Context
 import android.content.res.Resources
-import blbl.cat3399.core.prefs.PlayerPlaybackModes
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
+import android.os.Build
+import blbl.cat3399.core.prefs.AppPrefs
 import blbl.cat3399.core.prefs.CustomPageConfig
+import blbl.cat3399.core.prefs.PlayerPlaybackModes
+import blbl.cat3399.feature.category.CategoryZones
 import blbl.cat3399.feature.custom.CustomPageTabRegistry
+import blbl.cat3399.feature.home.HomeTabs
+import blbl.cat3399.feature.live.LiveFragment
+import blbl.cat3399.feature.my.MyTabs
 import blbl.cat3399.ui.MainRootNavRegistry
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -43,20 +51,7 @@ object SettingsText {
         return String.format(Locale.US, "%.2f", v.coerceIn(0f, 1.0f))
     }
 
-    fun areaText(area: Float): String =
-        when {
-            area >= 0.99f -> "不限"
-            area >= 0.78f -> "4/5"
-            area >= 0.71f -> "3/4"
-            area >= 0.62f -> "2/3"
-            area >= 0.55f -> "3/5"
-            area >= 0.45f -> "1/2"
-            area >= 0.36f -> "2/5"
-            area >= 0.29f -> "1/3"
-            area >= 0.22f -> "1/4"
-            area >= 0.19f -> "1/5"
-            else -> "1/6"
-        }
+    fun areaText(area: Float): String = "${(AppPrefs.normalizeDanmakuArea(area) * 100f).roundToInt()}%"
 
     fun danmakuLaneDensityText(prefValue: String): String =
         when (prefValue.trim()) {
@@ -95,6 +90,47 @@ object SettingsText {
         return labels.take(2).joinToString(separator = " / ") + " 等${labels.size}项"
     }
 
+    fun mainHomeVisibleTabsText(context: Context, selectedKeys: List<String>): String {
+        return visibleTabsText(
+            options = HomeTabs.all.map { it.key to context.getString(it.titleRes) },
+            selectedKeys = selectedKeys,
+        )
+    }
+
+    fun mainCategoryVisibleTabsText(selectedKeys: List<String>): String {
+        return visibleTabsText(
+            options = CategoryZones.defaultZones.map { CategoryZones.stableKeyFor(it) to it.title },
+            selectedKeys = selectedKeys,
+        )
+    }
+
+    fun mainLiveVisibleTabsText(selectedKeys: List<String>): String {
+        return visibleTabsText(
+            options = LiveFragment.LiveTabs.all.map { it.key to it.title },
+            selectedKeys = selectedKeys,
+        )
+    }
+
+    fun mainMyVisibleTabsText(context: Context, selectedKeys: List<String>): String {
+        return visibleTabsText(
+            options = MyTabs.all.map { it.key to context.getString(it.titleRes) },
+            selectedKeys = selectedKeys,
+        )
+    }
+
+    private fun visibleTabsText(options: List<Pair<String, String>>, selectedKeys: List<String>): String {
+        val selected = selectedKeys.takeIf { it.isNotEmpty() }?.toSet()
+        val labels =
+            if (selected == null) {
+                options.map { it.second }
+            } else {
+                options.filter { it.first in selected }.map { it.second }
+            }
+        if (labels.isEmpty()) return "全部"
+        if (labels.size <= 4) return labels.joinToString(separator = " / ")
+        return labels.take(3).joinToString(separator = " / ") + " 等${labels.size}项"
+    }
+
     fun mainBackFocusSchemeText(prefValue: String): String =
         when (prefValue) {
             blbl.cat3399.core.prefs.AppPrefs.MAIN_BACK_FOCUS_SCHEME_B -> "回到Tab0内容区"
@@ -102,10 +138,26 @@ object SettingsText {
             else -> "回到当前所属Tab"
         }
 
+    fun videoCardLongPressActionText(prefValue: String): String =
+        when (prefValue) {
+            blbl.cat3399.core.prefs.AppPrefs.VIDEO_CARD_LONG_PRESS_ACTION_WATCH_LATER -> "添加到稍后再看"
+            blbl.cat3399.core.prefs.AppPrefs.VIDEO_CARD_LONG_PRESS_ACTION_OPEN_DETAIL -> "进入详情页"
+            blbl.cat3399.core.prefs.AppPrefs.VIDEO_CARD_LONG_PRESS_ACTION_OPEN_UP -> "进入UP主页"
+            blbl.cat3399.core.prefs.AppPrefs.VIDEO_CARD_LONG_PRESS_ACTION_DISMISS -> "不感兴趣"
+            else -> "手动选择"
+        }
+
     fun themePresetText(prefValue: String): String =
         when (prefValue) {
             blbl.cat3399.core.prefs.AppPrefs.THEME_PRESET_TV_PINK -> "小电视粉"
+            blbl.cat3399.core.prefs.AppPrefs.THEME_PRESET_TV_PINK_ILLUSTRATION -> "经典"
             else -> "默认"
+        }
+
+    fun apiSourceText(prefValue: String): String =
+        when (prefValue) {
+            blbl.cat3399.core.prefs.AppPrefs.API_SOURCE_APP -> "App"
+            else -> "Web"
         }
 
     fun uiScaleFactorText(factor: Float): String {
@@ -136,6 +188,14 @@ object SettingsText {
             else -> "中"
         }
 
+    fun playerStyleTitle(): String = "播放器样式"
+
+    fun playerStyleText(code: String): String =
+        when (code) {
+            blbl.cat3399.core.prefs.AppPrefs.PLAYER_STYLE_HD -> "HD"
+            else -> "全屏"
+        }
+
     fun renderViewText(code: String): String =
         when (code) {
             blbl.cat3399.core.prefs.AppPrefs.PLAYER_RENDER_VIEW_TEXTURE_VIEW -> "TextureView"
@@ -161,6 +221,7 @@ object SettingsText {
             blbl.cat3399.core.prefs.AppPrefs.PLAYER_DOWN_KEY_OSD_FOCUS_COIN -> "投币"
             blbl.cat3399.core.prefs.AppPrefs.PLAYER_DOWN_KEY_OSD_FOCUS_FAV -> "收藏"
             blbl.cat3399.core.prefs.AppPrefs.PLAYER_DOWN_KEY_OSD_FOCUS_LIST_PANEL -> "列表面板"
+            blbl.cat3399.core.prefs.AppPrefs.PLAYER_DOWN_KEY_OSD_FOCUS_SPONSOR_SUBMIT -> "上传广告片段"
             blbl.cat3399.core.prefs.AppPrefs.PLAYER_DOWN_KEY_OSD_FOCUS_ADVANCED -> "更多设置"
             else -> "播放/暂停"
         }
@@ -181,6 +242,7 @@ object SettingsText {
                 if (enabled.contains(blbl.cat3399.core.prefs.AppPrefs.PLAYER_OSD_BTN_COIN)) add("投币")
                 if (enabled.contains(blbl.cat3399.core.prefs.AppPrefs.PLAYER_OSD_BTN_FAV)) add("收藏")
                 if (enabled.contains(blbl.cat3399.core.prefs.AppPrefs.PLAYER_OSD_BTN_LIST_PANEL)) add("列表")
+                if (enabled.contains(blbl.cat3399.core.prefs.AppPrefs.PLAYER_OSD_BTN_SPONSOR_SUBMIT)) add("上传广告片段")
                 if (enabled.contains(blbl.cat3399.core.prefs.AppPrefs.PLAYER_OSD_BTN_ADVANCED)) add("更多设置")
             }
         if (labels.isEmpty()) return "无"
@@ -223,6 +285,12 @@ object SettingsText {
         return "总${formatBytes(total)} 可用${formatBytes(avail)}"
     }
 
+    fun hardDecoderSupportText(): String {
+        val support = runCatching { queryHardDecoderSupport() }.getOrNull() ?: return "-"
+        return "H264 ${markSupport(support.h264)} / H265 ${markSupport(support.h265)} / AV1 ${markSupport(support.av1)} / " +
+            "DV ${markSupport(support.dolbyVision)} / Atmos ${markSupport(support.dolbyAtmos)}"
+    }
+
     fun formatBytes(bytes: Long): String {
         val b = bytes.coerceAtLeast(0)
         if (b < 1024) return "${b}B"
@@ -233,6 +301,70 @@ object SettingsText {
         val gb = mb / 1024.0
         return String.format(Locale.US, "%.2fGB", gb)
     }
+
+    private fun markSupport(supported: Boolean): String = if (supported) "✓" else "✗"
+
+    private fun queryHardDecoderSupport(): HardDecoderSupport {
+        var h264 = false
+        var h265 = false
+        var av1 = false
+        var dolbyVision = false
+        var dolbyAtmos = false
+        for (codecInfo in MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos) {
+            if (codecInfo.isEncoder) continue
+            if (!isHardwareDecoder(codecInfo)) continue
+            for (mime in codecInfo.supportedTypes) {
+                when (mime.lowercase(Locale.US)) {
+                    "video/avc" -> h264 = true
+                    "video/hevc" -> h265 = true
+                    "video/av01", "video/av1" -> av1 = true
+                    MIME_VIDEO_DOLBY_VISION -> dolbyVision = true
+                    in DOLBY_ATMOS_MIME_TYPES -> dolbyAtmos = true
+                }
+            }
+            if (h264 && h265 && av1 && dolbyVision && dolbyAtmos) break
+        }
+        return HardDecoderSupport(
+            h264 = h264,
+            h265 = h265,
+            av1 = av1,
+            dolbyVision = dolbyVision,
+            dolbyAtmos = dolbyAtmos,
+        )
+    }
+
+    private fun isHardwareDecoder(codecInfo: MediaCodecInfo): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (codecInfo.isAlias) return false
+            return codecInfo.isHardwareAccelerated
+        }
+        val name = codecInfo.name.lowercase(Locale.US)
+        if (name.startsWith("omx.google.")) return false
+        if (name.startsWith("c2.android.")) return false
+        if (name.startsWith("c2.google.")) return false
+        if (name.contains(".sw.")) return false
+        if (name.contains("software")) return false
+        if (name.contains("ffmpeg")) return false
+        return true
+    }
+
+    private data class HardDecoderSupport(
+        val h264: Boolean,
+        val h265: Boolean,
+        val av1: Boolean,
+        val dolbyVision: Boolean,
+        val dolbyAtmos: Boolean,
+    )
+
+    private const val MIME_VIDEO_DOLBY_VISION = "video/dolby-vision"
+
+    private val DOLBY_ATMOS_MIME_TYPES =
+        setOf(
+            "audio/eac3-joc",
+            "audio/ac4",
+            "audio/vnd.dolby.mlp",
+            "audio/vnd.dolby.mat",
+        )
 
     fun playbackModeText(code: String): String = PlayerPlaybackModes.label(code)
 

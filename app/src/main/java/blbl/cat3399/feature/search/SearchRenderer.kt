@@ -1,7 +1,6 @@
 package blbl.cat3399.feature.search
 
 import android.content.Context
-import android.content.Intent
 import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.View
@@ -16,177 +15,43 @@ import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import blbl.cat3399.R
 import blbl.cat3399.core.net.BiliClient
 import blbl.cat3399.core.paging.PagedGridStateMachine
-import blbl.cat3399.core.ui.AppToast
 import blbl.cat3399.core.ui.DpadGridController
 import blbl.cat3399.core.ui.FocusTreeUtils
 import blbl.cat3399.core.ui.GridSpanPolicy
 import blbl.cat3399.core.ui.UiScale
 import blbl.cat3399.core.ui.enableDpadTabFocus
 import blbl.cat3399.core.ui.hideImeReliable
-import blbl.cat3399.core.ui.popup.AppPopup
 import blbl.cat3399.core.ui.postIfAlive
 import blbl.cat3399.core.ui.requestFocusAdapterPositionReliable
 import blbl.cat3399.core.ui.requestFocusFirstItemOrSelfAfterRefresh
 import blbl.cat3399.core.ui.showImeReliable
 import blbl.cat3399.core.ui.uiScaler
 import blbl.cat3399.databinding.FragmentSearchBinding
-import blbl.cat3399.feature.following.FollowingGridAdapter
-import blbl.cat3399.feature.following.UpDetailActivity
-import blbl.cat3399.feature.following.openUpDetailFromVideoCard
-import blbl.cat3399.feature.live.LivePlayerActivity
-import blbl.cat3399.feature.live.LiveRoomAdapter
-import blbl.cat3399.feature.my.BangumiFollowAdapter
-import blbl.cat3399.feature.player.PlayerActivity
-import blbl.cat3399.feature.player.PlayerPlaylistItem
-import blbl.cat3399.feature.player.PlayerPlaylistStore
-import blbl.cat3399.feature.video.VideoDetailActivity
-import blbl.cat3399.feature.video.VideoCardAdapter
+import blbl.cat3399.feature.player.VideoCardPlaylistPage
+import blbl.cat3399.feature.video.buildPagedVideoCardPlaybackHandle
+import blbl.cat3399.feature.video.openVideoDetailFromPlaybackHandle
+import blbl.cat3399.feature.video.openVideoFromPlaybackHandle
 import com.google.android.material.card.MaterialCardView
 
-class SearchRenderer(
+class SearchRenderer internal constructor(
     private val fragment: SearchFragment,
     private val binding: FragmentSearchBinding,
     private val state: SearchState,
     private val interactor: SearchInteractor,
+    private val adapters: SearchAdapters,
 ) {
     private val viewContext: Context = binding.root.context
     private var released: Boolean = false
 
-    val keyAdapter: SearchKeyAdapter =
-        SearchKeyAdapter { key ->
-            interactor.onKeyClicked(key)
-        }
-
-    val suggestAdapter: SearchSuggestAdapter =
-        SearchSuggestAdapter { keyword ->
-            interactor.onKeywordClicked(keyword)
-        }
-
-    val hotAdapter: SearchHotAdapter =
-        SearchHotAdapter { keyword ->
-            interactor.onKeywordClicked(keyword)
-        }
-
-    lateinit var videoAdapter: VideoCardAdapter
-
-    val mediaAdapter: BangumiFollowAdapter =
-        BangumiFollowAdapter { position, season ->
-            state.pendingRestoreMediaPos = position
-            val isDrama = state.tabForIndex(state.currentTabIndex) == SearchTab.Media
-            fragment.openBangumiDetail(season = season, isDrama = isDrama)
-        }
-
-    val liveAdapter: LiveRoomAdapter =
-        LiveRoomAdapter { _, room ->
-            if (!room.isLive) {
-                AppToast.show(viewContext, "未开播")
-                return@LiveRoomAdapter
-            }
-            fragment.startActivity(
-                Intent(viewContext, LivePlayerActivity::class.java)
-                    .putExtra(LivePlayerActivity.EXTRA_ROOM_ID, room.roomId)
-                    .putExtra(LivePlayerActivity.EXTRA_TITLE, room.title)
-                    .putExtra(LivePlayerActivity.EXTRA_UNAME, room.uname),
-            )
-        }
-
-    val userAdapter: FollowingGridAdapter =
-        FollowingGridAdapter { following ->
-            fun openProfile() {
-                fragment.startActivity(
-                    Intent(viewContext, UpDetailActivity::class.java)
-                        .putExtra(UpDetailActivity.EXTRA_MID, following.mid)
-                        .putExtra(UpDetailActivity.EXTRA_NAME, following.name)
-                        .putExtra(UpDetailActivity.EXTRA_AVATAR, following.avatarUrl)
-                        .putExtra(UpDetailActivity.EXTRA_SIGN, following.sign),
-                )
-            }
-
-            fun openLive() {
-                val rid = following.liveRoomId.takeIf { it > 0L } ?: return
-                fragment.startActivity(
-                    Intent(viewContext, LivePlayerActivity::class.java)
-                        .putExtra(LivePlayerActivity.EXTRA_ROOM_ID, rid)
-                        .putExtra(LivePlayerActivity.EXTRA_TITLE, "")
-                        .putExtra(LivePlayerActivity.EXTRA_UNAME, following.name),
-                )
-            }
-
-            if (following.isLive && following.liveRoomId > 0L) {
-                AppPopup.singleChoice(
-                    context = viewContext,
-                    title = viewContext.getString(R.string.search_user_live_actions_title, following.name),
-                    items =
-                        listOf(
-                            viewContext.getString(R.string.search_user_action_enter_live),
-                            viewContext.getString(R.string.search_user_action_open_profile),
-                        ),
-                    checkedIndex = 0,
-                ) { which, _ ->
-                    when (which) {
-                        0 -> openLive()
-                        else -> openProfile()
-                    }
-                }
-            } else {
-                openProfile()
-            }
-        }
+    val keyAdapter: SearchKeyAdapter get() = adapters.keyAdapter
+    val suggestAdapter: SearchSuggestAdapter get() = adapters.suggestAdapter
+    val hotAdapter: SearchHotAdapter get() = adapters.hotAdapter
+    val videoAdapter get() = adapters.videoAdapter
+    val mediaAdapter get() = adapters.mediaAdapter
+    val liveAdapter get() = adapters.liveAdapter
+    val userAdapter get() = adapters.userAdapter
 
     private var resultsGridController: DpadGridController? = null
-
-    init {
-        videoAdapter =
-            VideoCardAdapter(
-                onClick = { card, pos ->
-                    val cards = videoAdapter.snapshot()
-                    val playlistItems =
-                        cards.map {
-                            PlayerPlaylistItem(
-                                bvid = it.bvid,
-                                cid = it.cid,
-                                title = it.title,
-                            )
-                        }
-                    val token =
-                        PlayerPlaylistStore.put(
-                            items = playlistItems,
-                            index = pos,
-                            source = "Search",
-                            uiCards = cards,
-                        )
-                    if (BiliClient.prefs.playerOpenDetailBeforePlay) {
-                        fragment.startActivity(
-                            Intent(viewContext, VideoDetailActivity::class.java)
-                                .putExtra(VideoDetailActivity.EXTRA_BVID, card.bvid)
-                                .putExtra(VideoDetailActivity.EXTRA_CID, card.cid ?: -1L)
-                                .apply { card.aid?.let { putExtra(VideoDetailActivity.EXTRA_AID, it) } }
-                                .putExtra(VideoDetailActivity.EXTRA_TITLE, card.title)
-                                .putExtra(VideoDetailActivity.EXTRA_COVER_URL, card.coverUrl)
-                                .apply {
-                                    card.ownerName.takeIf { it.isNotBlank() }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_NAME, it) }
-                                    card.ownerFace?.takeIf { it.isNotBlank() }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_AVATAR, it) }
-                                    card.ownerMid?.takeIf { it > 0L }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_MID, it) }
-                                }
-                                .putExtra(VideoDetailActivity.EXTRA_PLAYLIST_TOKEN, token)
-                                .putExtra(VideoDetailActivity.EXTRA_PLAYLIST_INDEX, pos),
-                        )
-                    } else {
-                        fragment.startActivity(
-                            Intent(viewContext, PlayerActivity::class.java)
-                                .putExtra(PlayerActivity.EXTRA_BVID, card.bvid)
-                                .putExtra(PlayerActivity.EXTRA_CID, card.cid ?: -1L)
-                                .putExtra(PlayerActivity.EXTRA_PLAYLIST_TOKEN, token)
-                                .putExtra(PlayerActivity.EXTRA_PLAYLIST_INDEX, pos),
-                        )
-                    }
-                },
-                onLongClick = { card, _ ->
-                    fragment.openUpDetailFromVideoCard(card)
-                    true
-                },
-            )
-    }
 
     fun setupInput() {
         setupQueryInput()
@@ -389,7 +254,6 @@ class SearchRenderer(
         }
 
         updateQueryUi()
-        updateMiddleUi(history = emptyList(), extra = emptyList())
         updateClearHistoryButton(state.query)
     }
 
@@ -553,6 +417,7 @@ class SearchRenderer(
         binding.tabLayout.addTab(binding.tabLayout.newTab().setText(R.string.search_tab_media))
         binding.tabLayout.addTab(binding.tabLayout.newTab().setText(R.string.search_tab_live))
         binding.tabLayout.addTab(binding.tabLayout.newTab().setText(R.string.search_tab_user))
+        binding.tabLayout.getTabAt(state.currentTabIndex)?.select()
 
         val tabLayout = binding.tabLayout
         tabLayout.postIfAlive(isAlive = { !released }) {
@@ -620,6 +485,37 @@ class SearchRenderer(
         restoreMediaFocusIfNeeded()
     }
 
+    fun openVideoAt(position: Int) {
+        viewContext.openVideoFromPlaybackHandle(
+            playbackHandle = videoPlaybackHandle(),
+            position = position,
+            openDetailBeforePlay = BiliClient.prefs.playerOpenDetailBeforePlay,
+        )
+    }
+
+    fun openDetailAt(position: Int) {
+        viewContext.openVideoDetailFromPlaybackHandle(videoPlaybackHandle(), position)
+    }
+
+    private fun videoPlaybackHandle() =
+        buildPagedVideoCardPlaybackHandle(
+            source = "Search",
+            cardsProvider = videoAdapter::snapshot,
+            nextCursorProvider = { state.videoPaging.snapshot().nextKey },
+            hasMoreProvider = { !state.videoPaging.snapshot().endReached },
+        ) { page ->
+            val keyword = state.query.trim()
+            val order = state.currentVideoOrder.apiValue
+            val res = blbl.cat3399.core.api.BiliApi.searchVideo(keyword = keyword, page = page, order = order)
+            val hasNextPage = res.pages > 0 && page < res.pages
+            VideoCardPlaylistPage(
+                cards = res.items,
+                nextCursor = page + 1,
+                hasMore = hasNextPage,
+                canAdvance = hasNextPage && res.items.isNotEmpty(),
+            )
+        }
+
     fun onShown() {
         // When SearchFragment is hidden via FragmentTransaction.hide(), it stays resumed.
         // Popping the detail fragment makes it visible again without triggering onResume().
@@ -637,11 +533,13 @@ class SearchRenderer(
     fun isResultsVisible(): Boolean = binding.panelResults.visibility == View.VISIBLE
 
     fun showInput() {
+        state.resultsVisible = false
         binding.panelResults.visibility = View.GONE
         binding.panelInput.visibility = View.VISIBLE
     }
 
     fun showResults() {
+        state.resultsVisible = true
         binding.panelInput.visibility = View.GONE
         binding.panelResults.visibility = View.VISIBLE
     }
@@ -704,6 +602,10 @@ class SearchRenderer(
         val list = merged.values.toList()
         binding.recyclerSuggest.visibility = if (list.isNotEmpty()) View.VISIBLE else View.INVISIBLE
         suggestAdapter.submit(list)
+    }
+
+    fun updateHotUi(keywords: List<String>) {
+        hotAdapter.submit(keywords)
     }
 
     fun updateClearHistoryButton(term: String) {

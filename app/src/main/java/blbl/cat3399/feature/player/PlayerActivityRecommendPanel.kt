@@ -22,6 +22,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val BOTTOM_PANEL_LOAD_MORE_REMAINING_THRESHOLD = 2
+
 internal fun PlayerActivity.isBottomCardPanelVisible(): Boolean = binding.recommendPanel.visibility == View.VISIBLE
 
 internal fun PlayerActivity.initBottomCardPanel() {
@@ -99,6 +101,21 @@ internal fun PlayerActivity.initBottomCardPanel() {
             },
         )
 
+    binding.recyclerRecommend.addOnScrollListener(
+        object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                if (newState != RecyclerView.SCROLL_STATE_DRAGGING && newState != RecyclerView.SCROLL_STATE_IDLE) return
+                if (recyclerView.canScrollHorizontally(1)) return
+                maybeLoadMoreBottomPanelItemsFromScroll()
+            }
+
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                if (dx <= 0) return
+                maybeLoadMoreBottomPanelItemsFromScroll()
+            }
+        },
+    )
+
     binding.recyclerRecommend.addOnChildAttachStateChangeListener(
         object : RecyclerView.OnChildAttachStateChangeListener {
             override fun onChildViewAttachedToWindow(view: View) {
@@ -137,7 +154,15 @@ internal fun PlayerActivity.initBottomCardPanel() {
                                         return@setOnKeyListener true
                                     }
 
-                            if (pos >= last) return@setOnKeyListener true
+                            if (pos >= last) {
+                                val nextPos = pos + 1
+                                ensurePlaylistIndexLoaded(kind = bottomCardPanelKind, index = nextPos) { available ->
+                                    if (!available) return@ensurePlaylistIndexLoaded
+                                    if (!isBottomCardPanelVisible() || bottomCardPanelKind == PlayerVideoListKind.RECOMMEND) return@ensurePlaylistIndexLoaded
+                                    binding.recyclerRecommend.post { focusBottomPanelPosition(nextPos) }
+                                }
+                                return@setOnKeyListener true
+                            }
                             focusBottomPanelPosition(pos + 1)
                             true
                         }
@@ -181,7 +206,9 @@ internal fun PlayerActivity.showListPanel(
     kind: PlayerVideoListKind,
     restoreFocusView: View,
     preferContentFocus: Boolean = false,
+    openedFromMenuKey: Boolean = false,
 ) {
+    onOverlayPanelShown(openedFromMenuKey = openedFromMenuKey)
     setControlsVisible(true)
     bottomCardPanelPreferContentFocus = preferContentFocus
     bottomCardPanelRestoreFocus = java.lang.ref.WeakReference(restoreFocusView)
@@ -236,7 +263,10 @@ private fun PlayerActivity.preferredListPanelKindForShortcutTarget(target: Playe
     }
 }
 
-internal fun PlayerActivity.hideBottomCardPanel(restoreFocus: Boolean) {
+internal fun PlayerActivity.hideBottomCardPanel(
+    restoreFocus: Boolean,
+    dismissTarget: PlayerActivity.PanelDismissTarget? = PlayerActivity.PanelDismissTarget.ResumeOsd,
+) {
     if (!isBottomCardPanelVisible() && binding.recommendScrim.visibility != View.VISIBLE) return
     binding.recommendScrim.visibility = View.GONE
     binding.recommendPanel.visibility = View.GONE
@@ -244,9 +274,9 @@ internal fun PlayerActivity.hideBottomCardPanel(restoreFocus: Boolean) {
     (binding.recyclerRecommend.adapter as? VideoCardAdapter)?.submit(emptyList())
     binding.tvListPanelEmpty.visibility = View.GONE
     binding.recyclerRecommend.visibility = View.VISIBLE
-    if (!restoreFocus) return
+    dismissTarget?.let { onLastOverlayPanelDismissed(it) }
+    if (!restoreFocus || dismissTarget == PlayerActivity.PanelDismissTarget.Fullscreen) return
 
-    setControlsVisible(true)
     val target = bottomCardPanelRestoreFocus?.get()
     binding.root.post {
         when {
@@ -258,13 +288,31 @@ internal fun PlayerActivity.hideBottomCardPanel(restoreFocus: Boolean) {
     }
 }
 
-internal fun PlayerActivity.notifyPartsListPanelChanged() {
+internal fun PlayerActivity.notifyPageListPanelChanged() {
     if (!isBottomCardPanelVisible()) return
-    if (bottomCardPanelKind != PlayerVideoListKind.PARTS) return
-    refreshBottomCardPanelContent(requestFocus = shouldRequestBottomPanelContentFocusAfterAsyncUpdate(kind = PlayerVideoListKind.PARTS))
+    if (bottomCardPanelKind != PlayerVideoListKind.PAGE) return
+    val requestFocus = shouldRequestBottomPanelContentFocusAfterAsyncUpdate(kind = PlayerVideoListKind.PAGE)
+    refreshBottomCardPanelContent(
+        requestFocus = requestFocus,
+        preserveScrollPosition = isPlaylistLoadMoreRunning(PlayerVideoListKind.PAGE) && !requestFocus,
+    )
 }
 
-private fun PlayerActivity.refreshBottomCardPanelContent(requestFocus: Boolean) {
+internal fun PlayerActivity.notifyPartsListPanelChanged() {
+    refreshPlayerInfoPanelContent()
+    if (!isBottomCardPanelVisible()) return
+    if (bottomCardPanelKind != PlayerVideoListKind.PARTS) return
+    val requestFocus = shouldRequestBottomPanelContentFocusAfterAsyncUpdate(kind = PlayerVideoListKind.PARTS)
+    refreshBottomCardPanelContent(
+        requestFocus = requestFocus,
+        preserveScrollPosition = isPlaylistLoadMoreRunning(PlayerVideoListKind.PARTS) && !requestFocus,
+    )
+}
+
+private fun PlayerActivity.refreshBottomCardPanelContent(
+    requestFocus: Boolean,
+    preserveScrollPosition: Boolean = false,
+) {
     if (!isBottomCardPanelVisible()) return
     val kind = bottomCardPanelKind
     if (kind == PlayerVideoListKind.RECOMMEND) {
@@ -297,16 +345,35 @@ private fun PlayerActivity.refreshBottomCardPanelContent(requestFocus: Boolean) 
         return
     }
 
-    val focusIndex =
-        when (kind) {
-            PlayerVideoListKind.PAGE -> pageListIndex
-            PlayerVideoListKind.PARTS -> partsListIndex
-            PlayerVideoListKind.RECOMMEND -> 0
-        }.takeIf { it >= 0 } ?: 0
-    val safeFocusIndex = focusIndex.coerceIn(0, (cards.size - 1).coerceAtLeast(0))
-    binding.recyclerRecommend.scrollToPosition(safeFocusIndex)
+    if (!preserveScrollPosition) {
+        val focusIndex =
+            when (kind) {
+                PlayerVideoListKind.PAGE -> pageListIndex
+                PlayerVideoListKind.PARTS -> partsListIndex
+                PlayerVideoListKind.RECOMMEND -> 0
+            }.takeIf { it >= 0 } ?: 0
+        val safeFocusIndex = focusIndex.coerceIn(0, (cards.size - 1).coerceAtLeast(0))
+        binding.recyclerRecommend.scrollToPosition(safeFocusIndex)
+    }
     if (requestFocus) {
         binding.recyclerRecommend.post { requestFocusBottomPanel() }
+    }
+}
+
+private fun PlayerActivity.maybeLoadMoreBottomPanelItemsFromScroll() {
+    if (!isBottomCardPanelVisible()) return
+
+    val kind = bottomCardPanelKind
+    if (kind == PlayerVideoListKind.RECOMMEND) return
+    if (!hasMorePlaylistItems(kind) || isPlaylistLoadMoreRunning(kind)) return
+
+    val lm = binding.recyclerRecommend.layoutManager as? LinearLayoutManager ?: return
+    val lastVisible = lm.findLastVisibleItemPosition().takeIf { it != RecyclerView.NO_POSITION } ?: return
+    val total = binding.recyclerRecommend.adapter?.itemCount ?: 0
+    if (total <= 0) return
+
+    if (total - lastVisible - 1 <= BOTTOM_PANEL_LOAD_MORE_REMAINING_THRESHOLD) {
+        loadMorePlaylist(kind = kind)
     }
 }
 
@@ -363,6 +430,7 @@ private fun PlayerActivity.ensureRecommendCardsLoaded() {
                 }
             } finally {
                 if (token == relatedVideosFetchToken) relatedVideosFetchJob = null
+                if (currentBvid.trim() == requestBvid) refreshPlayerInfoPanelContent()
                 if (isBottomCardPanelVisible() && bottomCardPanelKind == PlayerVideoListKind.RECOMMEND && currentBvid.trim() == requestBvid) {
                     refreshBottomCardPanelContent(requestFocus = shouldRequestBottomPanelContentFocusAfterAsyncUpdate(kind = PlayerVideoListKind.RECOMMEND))
                 }

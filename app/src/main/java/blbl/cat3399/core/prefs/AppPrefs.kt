@@ -2,15 +2,18 @@ package blbl.cat3399.core.prefs
 
 import android.content.Context
 import android.provider.Settings
+import blbl.cat3399.core.tv.isTvDevice
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 class AppPrefs(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("blbl_prefs", Context.MODE_PRIVATE)
+    private val defaultPlayerTouchGesturesEnabled by lazy(LazyThreadSafetyMode.NONE) { !appContext.isTvDevice() }
 
     var disclaimerAccepted: Boolean
         get() = prefs.getBoolean(KEY_DISCLAIMER_ACCEPTED, false)
@@ -19,6 +22,21 @@ class AppPrefs(context: Context) {
     var webRefreshToken: String?
         get() = prefs.getString(KEY_WEB_REFRESH_TOKEN, null)?.trim()?.takeIf { it.isNotBlank() }
         set(value) = prefs.edit().putString(KEY_WEB_REFRESH_TOKEN, value?.trim()).apply()
+
+    var appAuthSession: BiliAppAuthSession?
+        get() {
+            val raw = prefs.getString(KEY_APP_AUTH_SESSION, null)?.trim()?.takeIf { it.isNotBlank() } ?: return null
+            return runCatching { BiliAppAuthSession.fromJson(JSONObject(raw)) }.getOrNull()
+        }
+        set(value) {
+            val editor = prefs.edit()
+            if (value == null) {
+                editor.remove(KEY_APP_AUTH_SESSION)
+            } else {
+                editor.putString(KEY_APP_AUTH_SESSION, value.toJson().toString())
+            }
+            editor.apply()
+        }
 
     var webCookieRefreshCheckedEpochDay: Long
         get() = prefs.getLong(KEY_WEB_COOKIE_REFRESH_CHECKED_EPOCH_DAY, -1L)
@@ -48,23 +66,10 @@ class AppPrefs(context: Context) {
 
     var themePreset: String
         get() {
-            val raw = prefs.getString(KEY_THEME_PRESET, THEME_PRESET_DEFAULT) ?: THEME_PRESET_DEFAULT
-            val v = raw.trim()
-            return when (v) {
-                THEME_PRESET_DEFAULT,
-                THEME_PRESET_TV_PINK,
-                -> v
-                else -> THEME_PRESET_DEFAULT
-            }
+            return normalizeThemePreset(prefs.getString(KEY_THEME_PRESET, THEME_PRESET_DEFAULT))
         }
         set(value) {
-            val v = value.trim()
-            val normalized =
-                when (v) {
-                    THEME_PRESET_TV_PINK -> THEME_PRESET_TV_PINK
-                    else -> THEME_PRESET_DEFAULT
-                }
-            prefs.edit().putString(KEY_THEME_PRESET, normalized).apply()
+            prefs.edit().putString(KEY_THEME_PRESET, normalizeThemePreset(value)).apply()
         }
 
     var startupPage: String
@@ -84,6 +89,22 @@ class AppPrefs(context: Context) {
                 prefs.edit().putString(KEY_CUSTOM_PAGE_CONFIG, CustomPageConfigStore.serialize(normalized)).apply()
             }
         }
+
+    var mainHomeVisibleTabs: List<String>
+        get() = loadStringList(KEY_MAIN_HOME_VISIBLE_TABS)
+        set(value) = saveStringList(KEY_MAIN_HOME_VISIBLE_TABS, normalizeStringList(value))
+
+    var mainCategoryVisibleTabs: List<String>
+        get() = loadStringList(KEY_MAIN_CATEGORY_VISIBLE_TABS)
+        set(value) = saveStringList(KEY_MAIN_CATEGORY_VISIBLE_TABS, normalizeStringList(value))
+
+    var mainLiveVisibleTabs: List<String>
+        get() = loadStringList(KEY_MAIN_LIVE_VISIBLE_TABS)
+        set(value) = saveStringList(KEY_MAIN_LIVE_VISIBLE_TABS, normalizeStringList(value))
+
+    var mainMyVisibleTabs: List<String>
+        get() = loadStringList(KEY_MAIN_MY_VISIBLE_TABS)
+        set(value) = saveStringList(KEY_MAIN_MY_VISIBLE_TABS, normalizeStringList(value))
 
     var followingListOrder: String
         get() {
@@ -106,9 +127,21 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_DYNAMIC_FOLLOWING_RECENT_UPDATE_DOT_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_DYNAMIC_FOLLOWING_RECENT_UPDATE_DOT_ENABLED, value).apply()
 
+    var autoUpdateCheckEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_UPDATE_CHECK_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_UPDATE_CHECK_ENABLED, value).apply()
+
+    var autoUpdateIgnoredVersionName: String?
+        get() = prefs.getString(KEY_AUTO_UPDATE_IGNORED_VERSION_NAME, null)?.trim()?.takeIf { it.isNotBlank() }
+        set(value) = prefs.edit().putString(KEY_AUTO_UPDATE_IGNORED_VERSION_NAME, value?.trim()).apply()
+
     var userAgent: String
         get() = prefs.getString(KEY_UA, DEFAULT_UA) ?: DEFAULT_UA
         set(value) = prefs.edit().putString(KEY_UA, value).apply()
+
+    var apiSource: String
+        get() = normalizeApiSource(prefs.getString(KEY_API_SOURCE, API_SOURCE_WEB))
+        set(value) = prefs.edit().putString(KEY_API_SOURCE, normalizeApiSource(value)).apply()
 
     var ipv4OnlyEnabled: Boolean
         get() = prefs.getBoolean(KEY_IPV4_ONLY_ENABLED, false)
@@ -188,6 +221,10 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_DANMAKU_FOLLOW_BILI_SHIELD, true)
         set(value) = prefs.edit().putBoolean(KEY_DANMAKU_FOLLOW_BILI_SHIELD, value).apply()
 
+    var danmakuShowHighLikeIcon: Boolean
+        get() = prefs.getBoolean(KEY_DANMAKU_SHOW_HIGH_LIKE_ICON, true)
+        set(value) = prefs.edit().putBoolean(KEY_DANMAKU_SHOW_HIGH_LIKE_ICON, value).apply()
+
     var danmakuOpacity: Float
         get() = prefs.getFloat(KEY_DANMAKU_OPACITY, 1.0f)
         set(value) = prefs.edit().putFloat(KEY_DANMAKU_OPACITY, value).apply()
@@ -264,8 +301,15 @@ class AppPrefs(context: Context) {
         set(value) = prefs.edit().putInt(KEY_DANMAKU_SPEED, value).apply()
 
     var danmakuArea: Float
-        get() = prefs.getFloat(KEY_DANMAKU_AREA, 1.0f)
-        set(value) = prefs.edit().putFloat(KEY_DANMAKU_AREA, value).apply()
+        get() {
+            val raw = prefs.getFloat(KEY_DANMAKU_AREA, DANMAKU_AREA_DEFAULT)
+            val normalized = normalizeLegacyDanmakuAreaCompat(raw)
+            if (abs(raw - normalized) > DANMAKU_AREA_COMPAT_EPSILON) {
+                prefs.edit().putFloat(KEY_DANMAKU_AREA, normalized).apply()
+            }
+            return normalized
+        }
+        set(value) = prefs.edit().putFloat(KEY_DANMAKU_AREA, normalizeDanmakuArea(value)).apply()
 
     var playerPreferredQn: Int
         get() = prefs.getInt(KEY_PLAYER_PREFERRED_QN, 80)
@@ -326,6 +370,28 @@ class AppPrefs(context: Context) {
                     else -> PLAYER_ENGINE_EXO
                 }
             prefs.edit().putString(KEY_PLAYER_ENGINE_KIND, normalized).apply()
+        }
+
+    var playerStyle: String
+        get() {
+            val raw = prefs.getString(KEY_PLAYER_STYLE, PLAYER_STYLE_FULLSCREEN) ?: PLAYER_STYLE_FULLSCREEN
+            val v = raw.trim()
+            return when (v) {
+                PLAYER_STYLE_FULLSCREEN,
+                PLAYER_STYLE_HD,
+                -> v
+
+                else -> PLAYER_STYLE_FULLSCREEN
+            }
+        }
+        set(value) {
+            val v = value.trim()
+            val normalized =
+                when (v) {
+                    PLAYER_STYLE_HD -> PLAYER_STYLE_HD
+                    else -> PLAYER_STYLE_FULLSCREEN
+                }
+            prefs.edit().putString(KEY_PLAYER_STYLE, normalized).apply()
         }
 
     var playerPreferredAudioId: Int
@@ -437,6 +503,30 @@ class AppPrefs(context: Context) {
             prefs.edit().putString(KEY_PLAYER_HOLD_SEEK_MODE, v).apply()
         }
 
+    var playerHoldScrubTraverseSeconds: Int
+        get() =
+            normalizePlayerHoldScrubSeconds(
+                prefs.getInt(KEY_PLAYER_HOLD_SCRUB_TRAVERSE_SECONDS, PLAYER_HOLD_SCRUB_SECONDS_DEFAULT),
+            )
+        set(value) =
+            prefs.edit()
+                .putInt(
+                    KEY_PLAYER_HOLD_SCRUB_TRAVERSE_SECONDS,
+                    normalizePlayerHoldScrubSeconds(value),
+                ).apply()
+
+    var playerHoldScrubFixedStepSeconds: Int
+        get() =
+            normalizePlayerHoldScrubSeconds(
+                prefs.getInt(KEY_PLAYER_HOLD_SCRUB_FIXED_STEP_SECONDS, PLAYER_HOLD_SCRUB_SECONDS_DEFAULT),
+            )
+        set(value) =
+            prefs.edit()
+                .putInt(
+                    KEY_PLAYER_HOLD_SCRUB_FIXED_STEP_SECONDS,
+                    normalizePlayerHoldScrubSeconds(value),
+                ).apply()
+
     var playerAutoResumeEnabled: Boolean
         get() = prefs.getBoolean(KEY_PLAYER_AUTO_RESUME_ENABLED, true)
         set(value) = prefs.edit().putBoolean(KEY_PLAYER_AUTO_RESUME_ENABLED, value).apply()
@@ -458,6 +548,24 @@ class AppPrefs(context: Context) {
             }
         }
 
+    var sponsorBlockPrivateUserId: String
+        get() {
+            val cached =
+                prefs.getString(KEY_SPONSOR_BLOCK_PRIVATE_USER_ID, null)
+                    ?.trim()
+                    ?.takeIf { isValidSponsorBlockPrivateUserId(it) }
+            if (cached != null) return cached
+            val generated = generateSponsorBlockPrivateUserId()
+            prefs.edit().putString(KEY_SPONSOR_BLOCK_PRIVATE_USER_ID, generated).apply()
+            return generated
+        }
+        set(value) {
+            val normalized = value.trim()
+            if (isValidSponsorBlockPrivateUserId(normalized)) {
+                prefs.edit().putString(KEY_SPONSOR_BLOCK_PRIVATE_USER_ID, normalized).apply()
+            }
+        }
+
     var playerOpenDetailBeforePlay: Boolean
         get() = prefs.getBoolean(KEY_PLAYER_OPEN_DETAIL_BEFORE_PLAY, false)
         set(value) = prefs.edit().putBoolean(KEY_PLAYER_OPEN_DETAIL_BEFORE_PLAY, value).apply()
@@ -466,9 +574,17 @@ class AppPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_FULLSCREEN, true)
         set(value) = prefs.edit().putBoolean(KEY_FULLSCREEN, value).apply()
 
+    var avoidDisplayCutout: Boolean
+        get() = prefs.getBoolean(KEY_AVOID_DISPLAY_CUTOUT, true)
+        set(value) = prefs.edit().putBoolean(KEY_AVOID_DISPLAY_CUTOUT, value).apply()
+
     var tabSwitchFollowsFocus: Boolean
         get() = prefs.getBoolean(KEY_TAB_SWITCH_FOLLOWS_FOCUS, true)
         set(value) = prefs.edit().putBoolean(KEY_TAB_SWITCH_FOLLOWS_FOCUS, value).apply()
+
+    var mainAutoHideSidebarOnEnterContent: Boolean
+        get() = prefs.getBoolean(KEY_MAIN_AUTO_HIDE_SIDEBAR_ON_ENTER_CONTENT, false)
+        set(value) = prefs.edit().putBoolean(KEY_MAIN_AUTO_HIDE_SIDEBAR_ON_ENTER_CONTENT, value).apply()
 
     /**
      * Main page (Home/Category/Live/My) "Back" key focus-return scheme.
@@ -507,9 +623,13 @@ class AppPrefs(context: Context) {
                     MAIN_BACK_FOCUS_SCHEME_C,
                     -> v
                     else -> MAIN_BACK_FOCUS_SCHEME_A
-                }
+            }
             prefs.edit().putString(KEY_MAIN_BACK_FOCUS_SCHEME, normalized).apply()
         }
+
+    var videoCardLongPressAction: String
+        get() = normalizeVideoCardLongPressAction(prefs.getString(KEY_VIDEO_CARD_LONG_PRESS_ACTION, VIDEO_CARD_LONG_PRESS_ACTION_MANUAL))
+        set(value) = prefs.edit().putString(KEY_VIDEO_CARD_LONG_PRESS_ACTION, normalizeVideoCardLongPressAction(value)).apply()
 
     var playerDebugEnabled: Boolean
         get() = prefs.getBoolean(KEY_PLAYER_DEBUG, false)
@@ -546,6 +666,7 @@ class AppPrefs(context: Context) {
                 PLAYER_DOWN_KEY_OSD_FOCUS_COIN,
                 PLAYER_DOWN_KEY_OSD_FOCUS_FAV,
                 PLAYER_DOWN_KEY_OSD_FOCUS_LIST_PANEL,
+                PLAYER_DOWN_KEY_OSD_FOCUS_SPONSOR_SUBMIT,
                 PLAYER_DOWN_KEY_OSD_FOCUS_ADVANCED,
                 -> normalized
 
@@ -567,6 +688,7 @@ class AppPrefs(context: Context) {
                     PLAYER_DOWN_KEY_OSD_FOCUS_COIN,
                     PLAYER_DOWN_KEY_OSD_FOCUS_FAV,
                     PLAYER_DOWN_KEY_OSD_FOCUS_LIST_PANEL,
+                    PLAYER_DOWN_KEY_OSD_FOCUS_SPONSOR_SUBMIT,
                     PLAYER_DOWN_KEY_OSD_FOCUS_ADVANCED,
                     -> value
 
@@ -582,6 +704,17 @@ class AppPrefs(context: Context) {
     var playerPersistentBottomProgressEnabled: Boolean
         get() = prefs.getBoolean(KEY_PLAYER_PERSISTENT_BOTTOM_PROGRESS, false)
         set(value) = prefs.edit().putBoolean(KEY_PLAYER_PERSISTENT_BOTTOM_PROGRESS, value).apply()
+
+    var playerPersistentClockEnabled: Boolean
+        get() = prefs.getBoolean(KEY_PLAYER_PERSISTENT_CLOCK, false)
+        set(value) = prefs.edit().putBoolean(KEY_PLAYER_PERSISTENT_CLOCK, value).apply()
+
+    var playerTouchGesturesEnabled: Boolean
+        get() {
+            if (!prefs.contains(KEY_PLAYER_TOUCH_GESTURES_ENABLED)) return defaultPlayerTouchGesturesEnabled
+            return prefs.getBoolean(KEY_PLAYER_TOUCH_GESTURES_ENABLED, defaultPlayerTouchGesturesEnabled)
+        }
+        set(value) = prefs.edit().putBoolean(KEY_PLAYER_TOUCH_GESTURES_ENABLED, value).apply()
 
     var playerVideoShotPreviewSize: String
         get() {
@@ -640,6 +773,14 @@ class AppPrefs(context: Context) {
     var playerPlaybackMode: String
         get() = PlayerPlaybackModes.normalize(prefs.getString(KEY_PLAYER_PLAYBACK_MODE, PLAYER_PLAYBACK_MODE_NONE))
         set(value) = prefs.edit().putString(KEY_PLAYER_PLAYBACK_MODE, PlayerPlaybackModes.normalize(value)).apply()
+
+    var playerSettingsApplyToGlobal: Boolean
+        get() = prefs.getBoolean(KEY_PLAYER_SETTINGS_APPLY_TO_GLOBAL, false)
+        set(value) = prefs.edit().putBoolean(KEY_PLAYER_SETTINGS_APPLY_TO_GLOBAL, value).apply()
+
+    var playerUpQuickCardEnabled: Boolean
+        get() = prefs.getBoolean(KEY_PLAYER_UP_QUICK_CARD_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_PLAYER_UP_QUICK_CARD_ENABLED, value).apply()
 
     var playerOsdButtons: List<String>
         get() {
@@ -737,6 +878,12 @@ class AppPrefs(context: Context) {
             excludeKeys = CREDENTIAL_KEYS,
         )
 
+    fun exportDiagnosticsSnapshotJson(): JSONObject =
+        SharedPreferencesSnapshot.encode(
+            prefs = prefs,
+            excludeKeys = DIAGNOSTIC_EXCLUDED_KEYS,
+        )
+
     fun exportCredentialsSnapshotJson(): JSONObject =
         SharedPreferencesSnapshot.encode(
             prefs = prefs,
@@ -777,6 +924,18 @@ class AppPrefs(context: Context) {
             if (v.isNotBlank()) arr.put(v)
         }
         prefs.edit().putString(key, arr.toString()).apply()
+    }
+
+    private fun normalizeStringList(value: List<String>): List<String> {
+        if (value.isEmpty()) return emptyList()
+        val out = ArrayList<String>(value.size)
+        val seen = HashSet<String>(value.size * 2)
+        for (raw in value) {
+            val key = raw.trim()
+            if (key.isBlank()) continue
+            if (seen.add(key)) out.add(key)
+        }
+        return out
     }
 
     private fun migratePlayerOsdDetailButtonIfNeeded(normalized: List<String>): List<String> {
@@ -839,6 +998,10 @@ class AppPrefs(context: Context) {
         return if (PLAYER_SHORT_SEEK_STEP_SECONDS_OPTIONS.contains(value)) value else PLAYER_SHORT_SEEK_STEP_SECONDS_DEFAULT
     }
 
+    private fun normalizePlayerHoldScrubSeconds(value: Int): Int {
+        return if (PLAYER_HOLD_SCRUB_SECONDS_OPTIONS.contains(value)) value else PLAYER_HOLD_SCRUB_SECONDS_DEFAULT
+    }
+
     companion object {
         const val STARTUP_PAGE_HOME = "home"
         const val STARTUP_PAGE_CATEGORY = "category"
@@ -858,6 +1021,7 @@ class AppPrefs(context: Context) {
 
         const val THEME_PRESET_DEFAULT = "default"
         const val THEME_PRESET_TV_PINK = "tv_pink"
+        const val THEME_PRESET_TV_PINK_ILLUSTRATION = "tv_pink_illustration"
 
         const val FOLLOWING_LIST_ORDER_FOLLOW_TIME = "follow_time"
         const val FOLLOWING_LIST_ORDER_RECENT_VISIT = "recent_visit"
@@ -867,12 +1031,20 @@ class AppPrefs(context: Context) {
         const val MAIN_BACK_FOCUS_SCHEME_B = "B"
         const val MAIN_BACK_FOCUS_SCHEME_C = "C"
 
+        const val VIDEO_CARD_LONG_PRESS_ACTION_MANUAL = "manual"
+        const val VIDEO_CARD_LONG_PRESS_ACTION_WATCH_LATER = "watch_later"
+        const val VIDEO_CARD_LONG_PRESS_ACTION_OPEN_DETAIL = "open_detail"
+        const val VIDEO_CARD_LONG_PRESS_ACTION_OPEN_UP = "open_up"
+        const val VIDEO_CARD_LONG_PRESS_ACTION_DISMISS = "dismiss"
+
         private const val KEY_DISCLAIMER_ACCEPTED = "disclaimer_accepted"
         private const val KEY_WEB_REFRESH_TOKEN = "web_refresh_token"
+        private const val KEY_APP_AUTH_SESSION = "app_auth_session"
         private const val KEY_WEB_COOKIE_REFRESH_CHECKED_EPOCH_DAY = "web_cookie_refresh_checked_epoch_day"
         private const val KEY_BILI_TICKET_CHECKED_EPOCH_DAY = "bili_ticket_checked_epoch_day"
 
         private const val KEY_UA = "ua"
+        private const val KEY_API_SOURCE = "api_source"
         private const val KEY_IPV4_ONLY_ENABLED = "ipv4_only_enabled"
         private const val KEY_DEVICE_BUVID = "device_buvid"
         private const val KEY_DEVICE_UUID = "device_uuid"
@@ -883,8 +1055,14 @@ class AppPrefs(context: Context) {
         private const val KEY_THEME_PRESET = "theme_preset"
         private const val KEY_STARTUP_PAGE = "startup_page"
         private const val KEY_CUSTOM_PAGE_CONFIG = "custom_page_config"
+        private const val KEY_MAIN_HOME_VISIBLE_TABS = "main_home_visible_tabs"
+        private const val KEY_MAIN_CATEGORY_VISIBLE_TABS = "main_category_visible_tabs"
+        private const val KEY_MAIN_LIVE_VISIBLE_TABS = "main_live_visible_tabs"
+        private const val KEY_MAIN_MY_VISIBLE_TABS = "main_my_visible_tabs"
         private const val KEY_FOLLOWING_LIST_ORDER = "following_list_order"
         private const val KEY_DYNAMIC_FOLLOWING_RECENT_UPDATE_DOT_ENABLED = "dynamic_following_recent_update_dot_enabled"
+        private const val KEY_AUTO_UPDATE_CHECK_ENABLED = "auto_update_check_enabled"
+        private const val KEY_AUTO_UPDATE_IGNORED_VERSION_NAME = "auto_update_ignored_version_name"
         private const val KEY_IMAGE_QUALITY = "image_quality"
         private const val KEY_DANMAKU_ENABLED = "danmaku_enabled"
         private const val KEY_DANMAKU_ALLOW_TOP = "danmaku_allow_top"
@@ -895,6 +1073,7 @@ class AppPrefs(context: Context) {
         private const val KEY_DANMAKU_AI_ENABLED = "danmaku_ai_enabled"
         private const val KEY_DANMAKU_AI_LEVEL = "danmaku_ai_level"
         private const val KEY_DANMAKU_FOLLOW_BILI_SHIELD = "danmaku_follow_bili_shield"
+        private const val KEY_DANMAKU_SHOW_HIGH_LIKE_ICON = "danmaku_show_high_like_icon"
         private const val KEY_DANMAKU_OPACITY = "danmaku_opacity"
         private const val KEY_DANMAKU_TEXT_SIZE_SP = "danmaku_text_size_sp"
         private const val KEY_DANMAKU_LANE_DENSITY = "danmaku_lane_density"
@@ -907,6 +1086,7 @@ class AppPrefs(context: Context) {
         private const val KEY_PLAYER_CODEC = "player_codec"
         private const val KEY_PLAYER_RENDER_VIEW = "player_render_view"
         private const val KEY_PLAYER_ENGINE_KIND = "player_engine_kind"
+        private const val KEY_PLAYER_STYLE = "player_style"
         private const val KEY_PLAYER_AUDIO_ID = "player_audio_id"
         private const val KEY_PLAYER_CDN_PREFERENCE = "player_cdn_preference"
         private const val KEY_LIVE_HIGH_BITRATE_ENABLED = "live_high_bitrate_enabled"
@@ -919,21 +1099,31 @@ class AppPrefs(context: Context) {
         private const val KEY_PLAYER_SHORT_SEEK_STEP_SECONDS = "player_short_seek_step_seconds"
         private const val KEY_PLAYER_HOLD_SEEK_SPEED = "player_hold_seek_speed"
         private const val KEY_PLAYER_HOLD_SEEK_MODE = "player_hold_seek_mode"
+        private const val KEY_PLAYER_HOLD_SCRUB_TRAVERSE_SECONDS = "player_hold_scrub_traverse_seconds"
+        private const val KEY_PLAYER_HOLD_SCRUB_FIXED_STEP_SECONDS = "player_hold_scrub_fixed_step_seconds"
         private const val KEY_PLAYER_AUTO_RESUME_ENABLED = "player_auto_resume_enabled"
         private const val KEY_PLAYER_AUTO_SKIP_SEGMENTS_ENABLED = "player_auto_skip_segments_enabled"
         private const val KEY_PLAYER_AUTO_SKIP_SERVER_BASE_URL = "player_auto_skip_server_base_url"
+        private const val KEY_SPONSOR_BLOCK_PRIVATE_USER_ID = "sponsor_block_private_user_id"
         private const val KEY_PLAYER_OPEN_DETAIL_BEFORE_PLAY = "player_open_detail_before_play"
         private const val KEY_FULLSCREEN = "fullscreen_enabled"
+        private const val KEY_AVOID_DISPLAY_CUTOUT = "avoid_display_cutout"
         private const val KEY_TAB_SWITCH_FOLLOWS_FOCUS = "tab_switch_follows_focus"
+        private const val KEY_MAIN_AUTO_HIDE_SIDEBAR_ON_ENTER_CONTENT = "main_auto_hide_sidebar_on_enter_content"
         private const val KEY_MAIN_BACK_FOCUS_SCHEME = "main_back_focus_scheme"
+        private const val KEY_VIDEO_CARD_LONG_PRESS_ACTION = "video_card_long_press_action"
         private const val KEY_PLAYER_DEBUG = "player_debug_enabled"
         private const val KEY_PLAYER_DOUBLE_BACK_TO_EXIT = "player_double_back_on_ended"
         private const val KEY_PLAYER_DOWN_KEY_OSD_FOCUS_TARGET = "player_down_key_osd_focus_target"
         private const val KEY_PLAYER_TOGGLE_PLAY_STATE_SHOW_OSD = "player_toggle_play_state_show_osd"
         private const val KEY_PLAYER_PERSISTENT_BOTTOM_PROGRESS = "player_persistent_bottom_progress"
+        private const val KEY_PLAYER_PERSISTENT_CLOCK = "player_persistent_clock"
+        private const val KEY_PLAYER_TOUCH_GESTURES_ENABLED = "player_touch_gestures_enabled"
         private const val KEY_PLAYER_VIDEOSHOT_PREVIEW_SIZE = "player_videoshot_preview_size"
         private const val KEY_PLAYER_AUDIO_BALANCE_LEVEL = "player_audio_balance_level"
         private const val KEY_PLAYER_PLAYBACK_MODE = "player_playback_mode"
+        private const val KEY_PLAYER_SETTINGS_APPLY_TO_GLOBAL = "player_settings_apply_to_global"
+        private const val KEY_PLAYER_UP_QUICK_CARD_ENABLED = "player_up_quick_card_enabled"
         private const val KEY_PLAYER_OSD_BUTTONS = "player_osd_buttons"
         private const val KEY_PLAYER_OSD_BUTTONS_DETAIL_MIGRATED = "player_osd_buttons_detail_migrated"
         private const val KEY_PLAYER_OSD_BUTTONS_SOCIAL_ACTIONS_MIGRATED = "player_osd_buttons_social_actions_migrated"
@@ -949,11 +1139,20 @@ class AppPrefs(context: Context) {
         private val CREDENTIAL_KEYS: Set<String> =
             setOf(
                 KEY_WEB_REFRESH_TOKEN,
+                KEY_APP_AUTH_SESSION,
                 KEY_WEB_COOKIE_REFRESH_CHECKED_EPOCH_DAY,
                 KEY_BILI_TICKET_CHECKED_EPOCH_DAY,
                 KEY_GAIA_VGATE_V_VOUCHER,
                 KEY_GAIA_VGATE_V_VOUCHER_SAVED_AT_MS,
+                KEY_SPONSOR_BLOCK_PRIVATE_USER_ID,
             )
+
+        private val DIAGNOSTIC_EXCLUDED_KEYS: Set<String> =
+            CREDENTIAL_KEYS +
+                setOf(
+                    KEY_BUVID_ACTIVATED_MID,
+                    KEY_SEARCH_HISTORY,
+                )
 
         // PC browser UA is used to reduce CDN 403 for media resources.
         const val DEFAULT_UA =
@@ -966,6 +1165,62 @@ class AppPrefs(context: Context) {
         const val DANMAKU_LANE_DENSITY_STANDARD = "standard"
         const val DANMAKU_LANE_DENSITY_DENSE = "dense"
 
+        const val DANMAKU_AREA_MIN = 0.10f
+        const val DANMAKU_AREA_MAX = 1.00f
+        const val DANMAKU_AREA_STEP = 0.10f
+        const val DANMAKU_AREA_DEFAULT = DANMAKU_AREA_MAX
+        const val DANMAKU_AREA_COMPAT_EPSILON = 0.0001f
+
+        val DANMAKU_AREA_OPTIONS: List<Float> = (1..10).map { it / 10f }
+
+        private val LEGACY_DANMAKU_AREA_OPTIONS: List<Float> =
+            listOf(
+                1f / 6f,
+                1f / 5f,
+                0.25f,
+                1f / 3f,
+                2f / 5f,
+                0.50f,
+                3f / 5f,
+                2f / 3f,
+                0.75f,
+                4f / 5f,
+                1.00f,
+            )
+
+        fun normalizeDanmakuArea(value: Float): Float {
+            val v = value.takeIf { it.isFinite() } ?: DANMAKU_AREA_DEFAULT
+            val clamped = v.coerceIn(DANMAKU_AREA_MIN, DANMAKU_AREA_MAX)
+            val scaled = (clamped * 100f).roundToInt()
+            val step = (DANMAKU_AREA_STEP * 100f).roundToInt().coerceAtLeast(1)
+            val snapped = ((scaled + step / 2) / step) * step
+            return (snapped / 100f).coerceIn(DANMAKU_AREA_MIN, DANMAKU_AREA_MAX)
+        }
+
+        /**
+         * 0.1.22 生效，3 个版本后移除兼容：
+         * 兼容历史分数档位（1/6、1/5、1/4、1/3、2/5、1/2、3/5、2/3、3/4、4/5、1），
+         * 统一按新的 10% 档位四舍五入吸收到规范值。
+         */
+        fun normalizeLegacyDanmakuAreaCompat(value: Float): Float {
+            val sanitized = value.takeIf { it.isFinite() } ?: DANMAKU_AREA_DEFAULT
+            val legacy =
+                LEGACY_DANMAKU_AREA_OPTIONS.firstOrNull { legacyValue ->
+                    abs(legacyValue - sanitized) < DANMAKU_AREA_COMPAT_EPSILON
+                }
+            return normalizeDanmakuArea(legacy ?: sanitized)
+        }
+
+        fun normalizeVideoCardLongPressAction(value: String?): String {
+            return when (value?.trim()) {
+                VIDEO_CARD_LONG_PRESS_ACTION_WATCH_LATER -> VIDEO_CARD_LONG_PRESS_ACTION_WATCH_LATER
+                VIDEO_CARD_LONG_PRESS_ACTION_OPEN_DETAIL -> VIDEO_CARD_LONG_PRESS_ACTION_OPEN_DETAIL
+                VIDEO_CARD_LONG_PRESS_ACTION_OPEN_UP -> VIDEO_CARD_LONG_PRESS_ACTION_OPEN_UP
+                VIDEO_CARD_LONG_PRESS_ACTION_DISMISS -> VIDEO_CARD_LONG_PRESS_ACTION_DISMISS
+                else -> VIDEO_CARD_LONG_PRESS_ACTION_MANUAL
+            }
+        }
+
         const val DANMAKU_FONT_WEIGHT_NORMAL = "normal"
         const val DANMAKU_FONT_WEIGHT_BOLD = "bold"
 
@@ -975,10 +1230,16 @@ class AppPrefs(context: Context) {
         const val PLAYER_ENGINE_EXO = "exoplayer"
         const val PLAYER_ENGINE_IJK = "ijkplayer"
 
+        const val PLAYER_STYLE_FULLSCREEN = "fullscreen"
+        const val PLAYER_STYLE_HD = "hd"
+
         const val PLAYER_AUDIO_BALANCE_OFF = "off"
         const val PLAYER_AUDIO_BALANCE_LOW = "low"
         const val PLAYER_AUDIO_BALANCE_MEDIUM = "medium"
         const val PLAYER_AUDIO_BALANCE_HIGH = "high"
+
+        const val API_SOURCE_WEB = "web"
+        const val API_SOURCE_APP = "app"
 
         const val PLAYER_PLAYBACK_MODE_NONE = "none"
         const val PLAYER_PLAYBACK_MODE_LOOP_ONE = "loop_one"
@@ -995,6 +1256,8 @@ class AppPrefs(context: Context) {
         const val PLAYER_HOLD_SEEK_MODE_SCRUB = "scrub"
         const val PLAYER_HOLD_SEEK_MODE_SCRUB_FIXED_TIME = "scrub_fixed_time"
         const val PLAYER_HOLD_SEEK_SPEED_DEFAULT = 3.0f
+        val PLAYER_HOLD_SCRUB_SECONDS_OPTIONS: Set<Int> = linkedSetOf(5, 8, 10, 12, 15, 17, 20, 22, 25, 27, 30)
+        const val PLAYER_HOLD_SCRUB_SECONDS_DEFAULT = 10
 
         const val DEFAULT_PLAYER_AUTO_SKIP_SERVER_BASE_URL = "https://bsbsb.top"
         const val FALLBACK_PLAYER_AUTO_SKIP_SERVER_BASE_URL = "http://154.222.28.109"
@@ -1019,6 +1282,7 @@ class AppPrefs(context: Context) {
         const val PLAYER_OSD_BTN_COIN = "coin"
         const val PLAYER_OSD_BTN_FAV = "fav"
         const val PLAYER_OSD_BTN_LIST_PANEL = "list_panel"
+        const val PLAYER_OSD_BTN_SPONSOR_SUBMIT = "sponsor_submit"
         const val PLAYER_OSD_BTN_ADVANCED = "advanced"
 
         val DEFAULT_PLAYER_OSD_BUTTONS: List<String> =
@@ -1029,6 +1293,7 @@ class AppPrefs(context: Context) {
                 PLAYER_OSD_BTN_DANMAKU,
                 PLAYER_OSD_BTN_COMMENTS,
                 PLAYER_OSD_BTN_DETAIL,
+                PLAYER_OSD_BTN_SPONSOR_SUBMIT,
                 PLAYER_OSD_BTN_UP,
                 PLAYER_OSD_BTN_LIKE,
                 PLAYER_OSD_BTN_COIN,
@@ -1051,6 +1316,7 @@ class AppPrefs(context: Context) {
                 PLAYER_OSD_BTN_COIN,
                 PLAYER_OSD_BTN_FAV,
                 PLAYER_OSD_BTN_LIST_PANEL,
+                PLAYER_OSD_BTN_SPONSOR_SUBMIT,
                 PLAYER_OSD_BTN_ADVANCED,
             )
 
@@ -1066,6 +1332,7 @@ class AppPrefs(context: Context) {
         const val PLAYER_DOWN_KEY_OSD_FOCUS_COIN = "coin"
         const val PLAYER_DOWN_KEY_OSD_FOCUS_FAV = "fav"
         const val PLAYER_DOWN_KEY_OSD_FOCUS_LIST_PANEL = "list_panel"
+        const val PLAYER_DOWN_KEY_OSD_FOCUS_SPONSOR_SUBMIT = "sponsor_submit"
         const val PLAYER_DOWN_KEY_OSD_FOCUS_ADVANCED = "advanced"
 
         private const val PLAYER_DOWN_KEY_OSD_FOCUS_RECOMMEND_LEGACY = "recommend"
@@ -1077,6 +1344,21 @@ class AppPrefs(context: Context) {
             val md5 = java.security.MessageDigest.getInstance("MD5").digest(bytes)
             val hex = buildString(md5.size * 2) { md5.forEach { append(String.format(java.util.Locale.US, "%02x", it)) } }
             return "XY${hex[2]}${hex[12]}${hex[22]}$hex"
+        }
+
+        private fun isValidSponsorBlockPrivateUserId(text: String): Boolean {
+            val value = text.trim()
+            return value.length >= 30 && value.none { it.isWhitespace() }
+        }
+
+        private fun generateSponsorBlockPrivateUserId(): String {
+            val alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            val random = java.security.SecureRandom()
+            return buildString(40) {
+                repeat(40) {
+                    append(alphabet[random.nextInt(alphabet.length)])
+                }
+            }
         }
 
         private fun isValidUuid(text: String): Boolean {
@@ -1091,6 +1373,21 @@ class AppPrefs(context: Context) {
             val url = value.toHttpUrlOrNull() ?: return null
             if (url.query != null || url.fragment != null) return null
             return url.toString().trimEnd('/')
+        }
+
+        fun normalizeThemePreset(value: String?): String {
+            return when (value?.trim()) {
+                THEME_PRESET_TV_PINK -> THEME_PRESET_TV_PINK
+                THEME_PRESET_TV_PINK_ILLUSTRATION -> THEME_PRESET_TV_PINK_ILLUSTRATION
+                else -> THEME_PRESET_DEFAULT
+            }
+        }
+
+        fun normalizeApiSource(value: String?): String {
+            return when (value?.trim()?.lowercase()) {
+                API_SOURCE_APP -> API_SOURCE_APP
+                else -> API_SOURCE_WEB
+            }
         }
     }
 

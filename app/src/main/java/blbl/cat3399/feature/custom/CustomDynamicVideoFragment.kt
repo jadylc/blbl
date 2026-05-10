@@ -1,6 +1,5 @@
 package blbl.cat3399.feature.custom
 
-import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -19,20 +18,27 @@ import blbl.cat3399.core.paging.appliedOrNull
 import blbl.cat3399.core.ui.AppToast
 import blbl.cat3399.core.ui.DpadGridController
 import blbl.cat3399.core.ui.FocusTreeUtils
+import blbl.cat3399.core.ui.GridViewportFillMonitor
 import blbl.cat3399.core.ui.GridSpanPolicy
 import blbl.cat3399.core.ui.TabContentSwitchFocusHost
 import blbl.cat3399.core.ui.TabSwitchFocusTarget
 import blbl.cat3399.core.ui.postIfAlive
 import blbl.cat3399.core.ui.postIfAttached
+import blbl.cat3399.core.ui.installGridViewportFillMonitor
 import blbl.cat3399.core.ui.requestFocusAdapterPositionReliable
 import blbl.cat3399.core.ui.requestFocusFirstItemOrSelfAfterRefresh
 import blbl.cat3399.databinding.FragmentVideoGridBinding
 import blbl.cat3399.feature.following.openUpDetailFromVideoCard
-import blbl.cat3399.feature.player.PlayerActivity
-import blbl.cat3399.feature.player.PlayerPlaylistItem
-import blbl.cat3399.feature.player.PlayerPlaylistStore
+import blbl.cat3399.feature.player.VideoCardPlaylistPage
+import blbl.cat3399.feature.video.VideoCardActionController
 import blbl.cat3399.feature.video.VideoCardAdapter
-import blbl.cat3399.feature.video.VideoDetailActivity
+import blbl.cat3399.feature.video.VideoCardDismissBehavior
+import blbl.cat3399.feature.video.VideoCardVisibilityFilter
+import blbl.cat3399.feature.video.buildPagedVideoCardPlaybackHandle
+import blbl.cat3399.feature.video.defaultVideoCardPlaylistItem
+import blbl.cat3399.feature.video.openVideoDetailFromPlaybackHandle
+import blbl.cat3399.feature.video.openVideoFromPlaybackHandle
+import blbl.cat3399.feature.video.removeVideoCardAndRestoreFocus
 import blbl.cat3399.ui.RefreshKeyHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -49,7 +55,7 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
     private lateinit var adapter: VideoCardAdapter
     private var initialLoadTriggered: Boolean = false
 
-    private val loadedBvids = HashSet<String>()
+    private val loadedStableKeys = HashSet<String>()
     private val paging = PagedGridStateMachine<String?>(initialKey = null)
 
     private var pendingFocusFirstCardFromTab: Boolean = false
@@ -58,6 +64,7 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
     private var pendingFocusFirstCardAfterRefresh: Boolean = false
     private var lastFocusedAdapterPosition: Int? = null
     private var dpadGridController: DpadGridController? = null
+    private var viewportFillMonitor: GridViewportFillMonitor? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentVideoGridBinding.inflate(inflater, container, false)
@@ -66,55 +73,35 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         if (!::adapter.isInitialized) {
+            val actionController =
+                VideoCardActionController(
+                    context = requireContext(),
+                    scope = viewLifecycleOwner.lifecycleScope,
+                    dismissBehavior = VideoCardDismissBehavior.LocalNotInterested,
+                    onOpenDetail = { _, pos -> openDetail(pos) },
+                    onOpenUp = { card -> openUpDetailFromVideoCard(card) },
+                    onCardRemoved = { stableKey ->
+                        _binding?.recycler?.removeVideoCardAndRestoreFocus(
+                            adapter = adapter,
+                            stableKey = stableKey,
+                            isAlive = { _binding != null && isResumed },
+                        )
+                    },
+                )
             adapter =
                 VideoCardAdapter(
-                    onClick = { card, pos ->
-                        val cards = adapter.snapshot()
-                        val playlistItems =
-                            cards.map {
-                                PlayerPlaylistItem(
-                                    bvid = it.bvid,
-                                    cid = it.cid,
-                                    title = it.title,
-                                )
-                            }
-                        val token =
-                            PlayerPlaylistStore.put(
-                                items = playlistItems,
-                                index = pos,
-                                source = "CustomDynamic",
-                                uiCards = cards,
-                            )
-                        if (BiliClient.prefs.playerOpenDetailBeforePlay) {
-                            startActivity(
-                                Intent(requireContext(), VideoDetailActivity::class.java)
-                                    .putExtra(VideoDetailActivity.EXTRA_BVID, card.bvid)
-                                    .putExtra(VideoDetailActivity.EXTRA_CID, card.cid ?: -1L)
-                                    .apply { card.aid?.let { putExtra(VideoDetailActivity.EXTRA_AID, it) } }
-                                    .putExtra(VideoDetailActivity.EXTRA_TITLE, card.title)
-                                    .putExtra(VideoDetailActivity.EXTRA_COVER_URL, card.coverUrl)
-                                    .apply {
-                                        card.ownerName.takeIf { it.isNotBlank() }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_NAME, it) }
-                                        card.ownerFace?.takeIf { it.isNotBlank() }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_AVATAR, it) }
-                                        card.ownerMid?.takeIf { it > 0L }?.let { putExtra(VideoDetailActivity.EXTRA_OWNER_MID, it) }
-                                    }
-                                    .putExtra(VideoDetailActivity.EXTRA_PLAYLIST_TOKEN, token)
-                                    .putExtra(VideoDetailActivity.EXTRA_PLAYLIST_INDEX, pos),
-                            )
-                        } else {
-                            startActivity(
-                                Intent(requireContext(), PlayerActivity::class.java)
-                                    .putExtra(PlayerActivity.EXTRA_BVID, card.bvid)
-                                    .putExtra(PlayerActivity.EXTRA_CID, card.cid ?: -1L)
-                                    .putExtra(PlayerActivity.EXTRA_PLAYLIST_TOKEN, token)
-                                    .putExtra(PlayerActivity.EXTRA_PLAYLIST_INDEX, pos),
-                            )
-                        }
+                    onClick = { _, pos ->
+                        requireContext().openVideoFromPlaybackHandle(
+                            playbackHandle = playbackHandle(),
+                            position = pos,
+                            openDetailBeforePlay = BiliClient.prefs.playerOpenDetailBeforePlay,
+                        )
                     },
                     onLongClick = { card, _ ->
                         openUpDetailFromVideoCard(card)
                         true
                     },
+                    actionDelegate = actionController,
                 )
         }
 
@@ -168,6 +155,16 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
                         enableCenterLongPressToLongClick = true,
                     ),
             ).also { it.install() }
+        viewportFillMonitor?.release()
+        viewportFillMonitor =
+            binding.recycler.installGridViewportFillMonitor(
+                isEnabled = { _binding != null && isResumed },
+                canLoadMore = {
+                    val snapshot = paging.snapshot()
+                    !snapshot.isLoading && !snapshot.endReached
+                },
+                loadMore = { loadNextPage() },
+            )
 
         binding.swipeRefresh.setOnRefreshListener {
             pendingFocusFirstCardAfterRefresh = true
@@ -179,6 +176,7 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
     override fun onResume() {
         super.onResume()
         (binding.recycler.layoutManager as? GridLayoutManager)?.spanCount = spanCountForWidth()
+        viewportFillMonitor?.scheduleCheck()
         maybeTriggerInitialLoad()
         maybeConsumePendingFocusFirstCard()
     }
@@ -187,6 +185,8 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
         initialLoadTriggered = false
         dpadGridController?.release()
         dpadGridController = null
+        viewportFillMonitor?.release()
+        viewportFillMonitor = null
         _binding = null
         super.onDestroyView()
     }
@@ -241,7 +241,7 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
 
     private fun resetAndLoad() {
         paging.reset()
-        loadedBvids.clear()
+        loadedStableKeys.clear()
         loadNextPage(isRefresh = true)
     }
 
@@ -255,21 +255,11 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
                     paging.loadNextPage(
                         isRefresh = isRefresh,
                         fetch = { offset ->
-                            val page = BiliApi.dynamicAllVideo(offset = offset)
-                            FetchedPage(
-                                items = page.items,
-                                nextOffset = page.nextOffset,
-                            )
+                            fetchVisiblePage(offset)
                         },
                         reduce = { _, fetched ->
-                            val seen = HashSet<String>(fetched.items.size)
-                            val filtered =
-                                fetched.items.filter {
-                                    if (loadedBvids.contains(it.bvid)) return@filter false
-                                    seen.add(it.bvid)
-                                }
                             PagedGridStateMachine.Update(
-                                items = filtered,
+                                items = fetched.items,
                                 nextKey = fetched.nextOffset,
                                 endReached = fetched.nextOffset == null,
                             )
@@ -277,7 +267,7 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
                     )
 
                 val applied = result.appliedOrNull() ?: return@launch
-                applied.items.forEach { loadedBvids.add(it.bvid) }
+                applied.items.forEach { loadedStableKeys.add(it.stableKey()) }
                 if (applied.isRefresh) {
                     adapter.submit(applied.items)
                 } else if (applied.items.isNotEmpty()) {
@@ -290,18 +280,22 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
                             clearPendingFocusFlags()
                             val recycler = b.recycler
                             val isUiAlive = { _binding === b && isResumed }
+                            lastFocusedAdapterPosition = adapter.itemCount.takeIf { it > 0 }?.let { 0 }
                             recycler.requestFocusFirstItemOrSelfAfterRefresh(
                                 itemCount = adapter.itemCount,
                                 smoothScroll = false,
                                 isAlive = isUiAlive,
                                 onDone = { focusedFirstItem ->
                                     if (focusedFirstItem) lastFocusedAdapterPosition = 0
+                                    dpadGridController?.unparkFocusAfterDataSetReset()
                                 },
                             )
+                            viewportFillMonitor?.scheduleCheck()
                             return@postIfAlive
                         }
                         maybeConsumePendingFocusFirstCard()
                         dpadGridController?.consumePendingFocusAfterLoadMore()
+                        viewportFillMonitor?.scheduleCheck()
                     }
                 }
             } catch (t: Throwable) {
@@ -400,10 +394,9 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
     private fun spanCountForWidth(): Int {
         val dm = resources.displayMetrics
         val widthDp = dm.widthPixels / dm.density
-        return GridSpanPolicy.dynamicSpanCountForWidthDp(
+        return GridSpanPolicy.fixedSpanCountForWidthDp(
             widthDp = widthDp,
-            dynamicOverrideSpanCount = BiliClient.prefs.dynamicGridSpanCount,
-            globalOverrideSpanCount = BiliClient.prefs.gridSpanCount,
+            overrideSpanCount = BiliClient.prefs.gridSpanCount,
         )
     }
 
@@ -453,4 +446,40 @@ class CustomDynamicVideoFragment : Fragment(), RefreshKeyHandler, TabSwitchFocus
     companion object {
         fun newInstance() = CustomDynamicVideoFragment()
     }
+
+    private suspend fun fetchVisiblePage(offset: String?): FetchedPage {
+        var currentOffset = offset
+        while (true) {
+            val page = BiliApi.dynamicAllVideo(offset = currentOffset)
+            val visibleItems = VideoCardVisibilityFilter.filterVisibleFresh(page.items, loadedStableKeys)
+            if (visibleItems.isNotEmpty() || page.nextOffset == null || page.nextOffset == currentOffset || page.items.isEmpty()) {
+                return FetchedPage(
+                    items = visibleItems,
+                    nextOffset = page.nextOffset,
+                )
+            }
+            currentOffset = page.nextOffset
+        }
+    }
+
+    private fun openDetail(position: Int) {
+        requireContext().openVideoDetailFromPlaybackHandle(playbackHandle(), position)
+    }
+
+    private fun playbackHandle() =
+        buildPagedVideoCardPlaybackHandle(
+            source = "CustomDynamic",
+            cardsProvider = adapter::snapshot,
+            nextCursorProvider = { paging.snapshot().nextKey },
+            hasMoreProvider = { !paging.snapshot().endReached },
+        ) { offset ->
+            val page = BiliApi.dynamicAllVideo(offset = offset)
+            val nextOffset = page.nextOffset
+            VideoCardPlaylistPage(
+                cards = page.items,
+                nextCursor = nextOffset,
+                hasMore = nextOffset != null,
+                canAdvance = nextOffset != null && nextOffset != offset && page.items.isNotEmpty(),
+            )
+        }
 }

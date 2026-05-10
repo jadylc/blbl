@@ -8,7 +8,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.MarginLayoutParams
 import android.view.ViewTreeObserver
+import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.fragment.app.Fragment
@@ -17,7 +19,9 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import androidx.recyclerview.widget.SimpleItemAnimator
+import blbl.cat3399.BuildConfig
 import blbl.cat3399.R
+import blbl.cat3399.core.account.AccountSessionStore
 import blbl.cat3399.core.api.BiliApi
 import blbl.cat3399.core.log.AppLog
 import blbl.cat3399.core.log.CrashTracker
@@ -31,13 +35,19 @@ import blbl.cat3399.core.ui.FocusTreeUtils
 import blbl.cat3399.core.ui.Immersive
 import blbl.cat3399.core.ui.TabContentSwitchFocusHost
 import blbl.cat3399.core.ui.cloneInUserScale
+import blbl.cat3399.core.ui.dispatchToAncestorDpadItemKeyHandler
 import blbl.cat3399.core.ui.popup.AppPopup
 import blbl.cat3399.core.ui.popup.PopupHandle
+import blbl.cat3399.core.update.ApkUpdateFlow
+import blbl.cat3399.core.update.ApkUpdater
 import blbl.cat3399.databinding.ActivityMainBinding
 import blbl.cat3399.databinding.DialogUserInfoBinding
 import blbl.cat3399.feature.following.FollowingListActivity
 import blbl.cat3399.feature.login.QrLoginActivity
+import blbl.cat3399.feature.player.engine.IjkPlayerPlugin
+import blbl.cat3399.feature.player.engine.IjkPlayerPluginUi
 import blbl.cat3399.feature.settings.SettingsActivity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -45,6 +55,11 @@ import java.lang.ref.WeakReference
 import java.util.Locale
 
 class MainActivity : BaseActivity(), SidebarFocusHost {
+    private enum class UserInfoOverlayMode {
+        PROFILE,
+        ACCOUNT_SWITCH,
+    }
+
     private lateinit var binding: ActivityMainBinding
     private lateinit var navAdapter: SidebarNavAdapter
     private var needForceInitialSidebarFocus: Boolean = false
@@ -56,9 +71,20 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
     private var focusListener: ViewTreeObserver.OnGlobalFocusChangeListener? = null
     private var disclaimerPopup: PopupHandle? = null
     private var crashPromptPopup: PopupHandle? = null
+    private var ijkKernelPromptPopup: PopupHandle? = null
+    private var autoUpdatePromptPopup: PopupHandle? = null
+    private var ijkKernelPromptShown: Boolean = false
+    private var autoUpdateCheckStarted: Boolean = false
+    private var autoUpdatePromptShownVersion: String? = null
+    private var pendingAutoUpdate: ApkUpdater.RemoteUpdate? = null
+    private var autoUpdateCheckJob: Job? = null
     private lateinit var userInfoOverlay: DialogUserInfoBinding
     private val userInfoReturnFocus = FocusReturn()
     private var userInfoLoadJob: Job? = null
+    private var userInfoOverlayMode: UserInfoOverlayMode = UserInfoOverlayMode.PROFILE
+    private var isSidebarExpanded: Boolean = true
+    private var pendingSidebarCollapseAfterMainFocus: Boolean = false
+    private var pendingSidebarCollapseToken: Int = 0
     private var lastBackAtMs: Long = 0L
     private var lastMainFocusAtMs: Long = 0L
 
@@ -81,6 +107,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         binding = ActivityMainBinding.inflate(layoutInflater.cloneInUserScale(this))
         setContentView(binding.root)
         Immersive.apply(this, BiliClient.prefs.fullscreenEnabled)
+        setSidebarExpanded(expanded = true)
         launchNavId = resolveLaunchNavId()
 
         userInfoOverlay = binding.userInfoOverlay
@@ -128,6 +155,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 if (newFocus != null && isInMainContainer(newFocus)) {
                     lastMainFocusedView = WeakReference(newFocus)
                     lastMainFocusAtMs = SystemClock.uptimeMillis()
+                    maybeCollapseSidebarAfterMainFocusTransfer(newFocus)
                 }
             }.also { binding.root.viewTreeObserver.addOnGlobalFocusChangeListener(it) }
 
@@ -165,6 +193,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
 
         refreshSidebarUser()
         showFirstLaunchDisclaimerIfNeeded()
+        maybeStartAutoUpdateCheck()
     }
 
     private fun resolveLaunchNavId(): Int {
@@ -178,17 +207,28 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
     override fun onResume() {
         super.onResume()
         syncSidebarNavState()
+        syncSidebarExpansionWithPrefs()
         restoreFocusAfterResume()
         forceInitialSidebarFocusIfNeeded()
         ensureInitialFocus()
         refreshSidebarUser()
+        if (isUserInfoOverlayVisible()) {
+            if (userInfoOverlayMode == UserInfoOverlayMode.ACCOUNT_SWITCH) {
+                showAccountSwitchPanel(requestFocus = false)
+            } else {
+                loadUserInfo()
+            }
+        }
         showLastCrashPromptIfNeeded()
+        showIjkKernelUpdatePromptIfNeeded()
+        showAutoUpdatePromptIfReady()
     }
 
     override fun onPause() {
         val focused = currentFocus
         pausedFocusedView = focused?.let { WeakReference(it) }
         pausedFocusWasInMain = focused != null && isInMainContainer(focused)
+        clearPendingSidebarCollapseAfterMainFocus()
         releaseDpadDownFocusGuard()
         super.onPause()
     }
@@ -239,6 +279,16 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
             return
         }
         switchRoot(desiredNavId, clearBackStack = true)
+    }
+
+    private fun syncSidebarExpansionWithPrefs() {
+        if (BiliClient.prefs.mainAutoHideSidebarOnEnterContent) {
+            if (currentFocus?.let(::isInSidebar) == true) {
+                setSidebarExpanded(expanded = true)
+            }
+            return
+        }
+        setSidebarExpanded(expanded = true)
     }
 
     private fun snapshotAndBlockFocus(container: ViewGroup) {
@@ -341,6 +391,9 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                     if (focused != null && isInMainContainer(focused)) {
                         if (tryMoveDynamicVideoToFollowing(focused)) return true
+                        if (focused.dispatchToAncestorDpadItemKeyHandler(event.keyCode, event)) {
+                            return true
+                        }
                         // If the current view can move LEFT within the main container (e.g. SearchFragment
                         // history/hot lists), don't steal the key event to enter the sidebar.
                         val next = focused.focusSearch(View.FOCUS_LEFT)
@@ -409,6 +462,8 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         userInfoOverlay.btnFollower.setOnClickListener {
             AppToast.show(this, "粉丝列表未实现")
         }
+        userInfoOverlay.btnSwitchAccount.setOnClickListener { showAccountSwitchPanel() }
+        userInfoOverlay.btnAddAccount.setOnClickListener { openQrLogin() }
         userInfoOverlay.btnLogout.setOnClickListener { showLogoutConfirm() }
 
         val invalidateOverlay = View.OnFocusChangeListener { _, _ ->
@@ -417,6 +472,8 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         }
         userInfoOverlay.btnFollowing.onFocusChangeListener = invalidateOverlay
         userInfoOverlay.btnFollower.onFocusChangeListener = invalidateOverlay
+        userInfoOverlay.btnSwitchAccount.onFocusChangeListener = invalidateOverlay
+        userInfoOverlay.btnAddAccount.onFocusChangeListener = invalidateOverlay
         userInfoOverlay.btnLogout.onFocusChangeListener = invalidateOverlay
     }
 
@@ -439,6 +496,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
 
     private fun showUserInfoOverlay() {
         if (isUserInfoOverlayVisible()) return
+        setSidebarExpanded(expanded = true)
         userInfoReturnFocus.capture(currentFocus)
         clampUserInfoOverlayCardWidth()
 
@@ -446,18 +504,107 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         binding.mainContainer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
 
         userInfoOverlay.root.visibility = View.VISIBLE
-        resetUserInfoUi()
-        loadUserInfo()
+        showProfilePanel(requestFocus = false)
 
         userInfoOverlay.root.post {
             userInfoOverlay.btnFollowing.requestFocus()
         }
     }
 
+    private fun showProfilePanel(requestFocus: Boolean = true) {
+        userInfoOverlayMode = UserInfoOverlayMode.PROFILE
+        userInfoOverlay.profileStatsRow.visibility = View.VISIBLE
+        userInfoOverlay.profileExpRow.visibility = View.VISIBLE
+        userInfoOverlay.btnSwitchAccount.visibility = View.VISIBLE
+        userInfoOverlay.btnLogout.visibility = View.VISIBLE
+        userInfoOverlay.accountSwitchPanel.visibility = View.GONE
+        userInfoOverlay.accountList.removeAllViews()
+        resetUserInfoUi()
+        loadUserInfo()
+        if (requestFocus) {
+            userInfoOverlay.btnFollowing.post { userInfoOverlay.btnFollowing.requestFocus() }
+        }
+    }
+
+    private fun showAccountSwitchPanel(requestFocus: Boolean = true) {
+        userInfoOverlayMode = UserInfoOverlayMode.ACCOUNT_SWITCH
+        userInfoLoadJob?.cancel()
+        userInfoLoadJob = null
+        BiliClient.accounts.saveCurrentSessionAsActive(
+            appPrefs = BiliClient.prefs,
+            cookies = BiliClient.cookies,
+        )
+        userInfoOverlay.profileStatsRow.visibility = View.GONE
+        userInfoOverlay.profileExpRow.visibility = View.GONE
+        userInfoOverlay.progressExp.visibility = View.GONE
+        userInfoOverlay.btnSwitchAccount.visibility = View.GONE
+        userInfoOverlay.btnLogout.visibility = View.GONE
+        userInfoOverlay.pbLoading.visibility = View.GONE
+        userInfoOverlay.accountSwitchPanel.visibility = View.VISIBLE
+        renderAccountSwitchRows()
+        if (requestFocus) {
+            val first = userInfoOverlay.accountList.getChildAt(0) ?: userInfoOverlay.btnAddAccount
+            first.post { first.requestFocus() }
+        }
+    }
+
+    private fun renderAccountSwitchRows() {
+        val list = userInfoOverlay.accountList
+        list.removeAllViews()
+        val accounts = BiliClient.accounts.accounts()
+        for (account in accounts) {
+            val row = buildAccountSwitchRow(account)
+            list.addView(row)
+        }
+    }
+
+    private fun buildAccountSwitchRow(account: AccountSessionStore.AccountSummary): TextView {
+        val row =
+            layoutInflater.inflate(
+                R.layout.item_account_switch_row,
+                userInfoOverlay.accountList,
+                false,
+            ) as TextView
+        row.text = accountSwitchRowText(account)
+        row.onFocusChangeListener =
+            View.OnFocusChangeListener { _, _ ->
+                userInfoOverlay.card.invalidate()
+                userInfoOverlay.root.invalidate()
+            }
+        row.setOnClickListener {
+            if (account.isActive) {
+                showProfilePanel()
+                return@setOnClickListener
+            }
+            val switched =
+                BiliClient.accounts.switchToAccount(
+                    accountId = account.id,
+                    appPrefs = BiliClient.prefs,
+                    cookies = BiliClient.cookies,
+                )
+            if (switched == null) {
+                AppToast.show(this, "帐号不存在")
+                showAccountSwitchPanel()
+                return@setOnClickListener
+            }
+            AppToast.show(this, "已切换：${switched.name}")
+            syncSidebarNavState()
+            refreshSidebarUser()
+            showProfilePanel()
+        }
+        return row
+    }
+
+    private fun accountSwitchRowText(account: AccountSessionStore.AccountSummary): String {
+        val suffix = if (account.isActive) "（当前）" else ""
+        return account.name + suffix
+    }
+
     private fun hideUserInfoOverlay() {
         if (!isUserInfoOverlayVisible()) return
         userInfoLoadJob?.cancel()
         userInfoLoadJob = null
+        userInfoOverlayMode = UserInfoOverlayMode.PROFILE
         userInfoOverlay.root.visibility = View.GONE
 
         binding.sidebar.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -495,6 +642,13 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                     val mid = data?.optLong("mid") ?: 0L
                     val name = data?.optString("uname", "").orEmpty()
                     val avatarUrl = data?.optString("face")?.takeIf { it.isNotBlank() }
+                    BiliClient.accounts.saveCurrentSessionAsActive(
+                        appPrefs = BiliClient.prefs,
+                        cookies = BiliClient.cookies,
+                        name = name,
+                        avatarUrl = avatarUrl,
+                        mid = mid,
+                    )
 
                     val coins = parseCoins(data)
                     val levelInfo = data?.optJSONObject("level_info")
@@ -535,16 +689,27 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
     }
 
     private fun showLogoutConfirm() {
+        val accountCount = BiliClient.accounts.accounts().size
         AppPopup.confirm(
             context = this,
             title = "退出登录",
-            message = "将清除 Cookie（SESSDATA 等），需要重新登录。确定继续吗？",
+            message =
+                if (accountCount > 1) {
+                    "将移除当前帐号，并自动切换到其他已保存帐号。确定继续吗？"
+                } else {
+                    "将清除当前登录状态，需要重新登录。确定继续吗？"
+                },
             positiveText = "确定退出",
             negativeText = "取消",
             onPositive = {
-                BiliClient.clearLoginSession()
-                AppToast.show(this, "已退出登录")
+                val next =
+                    BiliClient.accounts.removeActiveAccountAndActivateNext(
+                        appPrefs = BiliClient.prefs,
+                        cookies = BiliClient.cookies,
+                    )
+                AppToast.show(this, next?.let { "已退出当前帐号，已切换：${it.name}" } ?: "已退出登录")
                 hideUserInfoOverlay()
+                syncSidebarNavState()
                 refreshSidebarUser()
             },
         )
@@ -721,6 +886,8 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 onDismiss = {
                     disclaimerPopup = null
                     if (!BiliClient.prefs.disclaimerAccepted && !isChangingConfigurations) finish()
+                    maybeStartAutoUpdateCheck()
+                    showIjkKernelUpdatePromptIfNeeded()
                 },
             )
     }
@@ -742,8 +909,111 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 positiveText = "打开设置",
                 negativeText = "知道了",
                 onPositive = { startActivity(Intent(this, SettingsActivity::class.java)) },
-                onDismiss = { crashPromptPopup = null },
+                onDismiss = {
+                    crashPromptPopup = null
+                    showIjkKernelUpdatePromptIfNeeded()
+                },
             )
+    }
+
+    private fun showIjkKernelUpdatePromptIfNeeded() {
+        if (ijkKernelPromptShown) {
+            showAutoUpdatePromptIfReady()
+            return
+        }
+        if (!BiliClient.prefs.disclaimerAccepted) return
+        if (BiliClient.prefs.playerEngineKind != AppPrefs.PLAYER_ENGINE_IJK) {
+            showAutoUpdatePromptIfReady()
+            return
+        }
+        if (disclaimerPopup?.isShowing == true) return
+        if (crashPromptPopup?.isShowing == true) return
+        if (ijkKernelPromptPopup?.isShowing == true) return
+
+        val status = IjkPlayerPlugin.status(this)
+        val (title, message) =
+            when (status) {
+                IjkPlayerPlugin.InstallStatus.NeedsUpdate ->
+                    "播放器内核需要更新" to "当前默认播放器内核是 IjkPlayer，本地内核不是当前应用要求的最新版。更新前不会加载旧 IjkPlayer 内核。"
+
+                IjkPlayerPlugin.InstallStatus.NotInstalled ->
+                    "播放器内核未安装" to "当前默认播放器内核是 IjkPlayer，需要先下载播放器内核。"
+
+                else -> {
+                    showAutoUpdatePromptIfReady()
+                    return
+                }
+            }
+
+        ijkKernelPromptShown = true
+        ijkKernelPromptPopup =
+            AppPopup.confirm(
+                context = this,
+                title = title,
+                message = message,
+                positiveText = "立即更新",
+                negativeText = "稍后",
+                onPositive = {
+                    IjkPlayerPluginUi.ensureInstalled(this) {}
+                },
+                onDismiss = {
+                    ijkKernelPromptPopup = null
+                    showAutoUpdatePromptIfReady()
+                },
+            )
+    }
+
+    private fun maybeStartAutoUpdateCheck() {
+        if (!BiliClient.prefs.disclaimerAccepted) return
+        if (!BiliClient.prefs.autoUpdateCheckEnabled) return
+        if (autoUpdateCheckStarted || autoUpdateCheckJob?.isActive == true) return
+
+        autoUpdateCheckStarted = true
+        autoUpdateCheckJob =
+            lifecycleScope.launch {
+                try {
+                    val update = ApkUpdater.fetchLatestUpdate()
+                    if (!ApkUpdater.isRemoteNewer(update.versionName, BuildConfig.VERSION_NAME)) return@launch
+                    if (BiliClient.prefs.autoUpdateIgnoredVersionName == update.versionName) return@launch
+                    pendingAutoUpdate = update
+                    showAutoUpdatePromptIfReady()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    AppLog.w("Update", "auto update check failed", t)
+                }
+            }
+    }
+
+    private fun showAutoUpdatePromptIfReady() {
+        if (!BiliClient.prefs.autoUpdateCheckEnabled) return
+        if (!BiliClient.prefs.disclaimerAccepted) return
+        if (disclaimerPopup?.isShowing == true) return
+        if (crashPromptPopup?.isShowing == true) return
+        if (ijkKernelPromptPopup?.isShowing == true) return
+        if (autoUpdatePromptPopup?.isShowing == true) return
+
+        val update = pendingAutoUpdate ?: return
+        if (!ApkUpdater.isRemoteNewer(update.versionName, BuildConfig.VERSION_NAME)) return
+        if (BiliClient.prefs.autoUpdateIgnoredVersionName == update.versionName) return
+        if (autoUpdatePromptShownVersion == update.versionName) return
+        autoUpdatePromptShownVersion = update.versionName
+
+        autoUpdatePromptPopup =
+            ApkUpdateFlow.showUpdatePrompt(
+                activity = this,
+                update = update,
+                onSkipVersion = { pendingAutoUpdate = null },
+                onDismiss = {
+                    autoUpdatePromptPopup = null
+                },
+            ) { selectedUpdate ->
+                ApkUpdateFlow.startDownloadAndInstall(
+                    activity = this,
+                    latestVersionHint = selectedUpdate.versionName,
+                    apkUrl = ApkUpdater.apkUrlFor(selectedUpdate.versionName),
+                )
+            }
     }
 
     private fun refreshSidebarUser() {
@@ -758,7 +1028,11 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 val data = nav.optJSONObject("data")
                 val isLogin = data?.optBoolean("isLogin") ?: false
                 val avatarUrl = data?.optString("face")?.takeIf { it.isNotBlank() }
-                if (isLogin) showLoggedIn(avatarUrl) else showLoggedOut()
+                if (isLogin) {
+                    showLoggedIn(avatarUrl)
+                } else {
+                    showLoggedOut()
+                }
             }.onFailure {
                 AppLog.w("MainActivity", "refreshSidebarUser failed", it)
             }
@@ -855,6 +1129,8 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
 
     private fun focusSidebarNavAt(position: Int): Boolean {
         if (position < 0 || position >= navAdapter.itemCount) return false
+        clearPendingSidebarCollapseAfterMainFocus()
+        setSidebarExpanded(expanded = true)
         binding.recyclerSidebar.post {
             val vh = binding.recyclerSidebar.findViewHolderForAdapterPosition(position)
             if (vh != null) {
@@ -872,6 +1148,15 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
     private fun focusMainFromSidebar(): Boolean {
         val rootFragment = currentRootFragment() ?: return false
         val fragmentView = rootFragment.view ?: return false
+        val armSidebarCollapse = BiliClient.prefs.mainAutoHideSidebarOnEnterContent
+
+        fun armSidebarCollapseAfterFocusTransfer() {
+            if (armSidebarCollapse) {
+                prepareSidebarCollapseAfterMainFocus()
+            } else {
+                clearPendingSidebarCollapseAfterMainFocus()
+            }
+        }
 
         val recyclerFollowing = fragmentView.findViewById<RecyclerView?>(R.id.recycler_following)
         if (recyclerFollowing != null) {
@@ -881,10 +1166,12 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 lastMain.isShown &&
                 FocusTreeUtils.isDescendantOf(lastMain, recyclerFollowing)
             ) {
+                armSidebarCollapseAfterFocusTransfer()
                 lastMain.requestFocus()
                 return true
             }
 
+            armSidebarCollapseAfterFocusTransfer()
             recyclerFollowing.post outer@{
                 val cur = currentFocus
                 if (cur != null && !isInSidebar(cur)) return@outer
@@ -911,6 +1198,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         val tabLayout = fragmentView.findViewById<com.google.android.material.tabs.TabLayout?>(R.id.tab_layout)
         val lastMainIsInTabs = tabLayout != null && lastMain != null && FocusTreeUtils.isDescendantOf(lastMain, tabLayout)
         if (!lastMainIsInTabs && lastMain != null && lastMain.isAttachedToWindow && lastMain.isShown && isInMainContainer(lastMain)) {
+            armSidebarCollapseAfterFocusTransfer()
             lastMain.requestFocus()
             return true
         }
@@ -920,6 +1208,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         if (tabLayout?.isShown == true) {
             val host = rootFragment as? TabContentSwitchFocusHost
             if (host != null) {
+                armSidebarCollapseAfterFocusTransfer()
                 host.requestFocusCurrentPagePrimaryItemFromContentSwitch()
                 return true
             }
@@ -930,6 +1219,7 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
                 ?: fragmentView.findViewById<RecyclerView?>(R.id.recycler)
 
         if (recycler != null) {
+            armSidebarCollapseAfterFocusTransfer()
             recycler.post outer@{
                 val cur = currentFocus
                 if (cur != null && !isInSidebar(cur)) return@outer
@@ -951,18 +1241,62 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
         if (tabLayout != null) {
             val tabStrip = tabLayout.getChildAt(0) as? ViewGroup
             val pos = tabLayout.selectedTabPosition.takeIf { it >= 0 } ?: 0
+            armSidebarCollapseAfterFocusTransfer()
             tabStrip?.getChildAt(pos)?.requestFocus()
             return true
         }
 
         val dynamicLoginBtn = fragmentView.findViewById<View?>(R.id.btn_login)
         if (dynamicLoginBtn != null && dynamicLoginBtn.isShown && dynamicLoginBtn.isFocusable) {
+            armSidebarCollapseAfterFocusTransfer()
             dynamicLoginBtn.requestFocus()
             return true
         }
 
+        armSidebarCollapseAfterFocusTransfer()
         fragmentView.requestFocus()
         return true
+    }
+
+    private fun prepareSidebarCollapseAfterMainFocus() {
+        pendingSidebarCollapseAfterMainFocus = true
+        val token = ++pendingSidebarCollapseToken
+        binding.root.postDelayed(
+            {
+                if (pendingSidebarCollapseToken != token) return@postDelayed
+                pendingSidebarCollapseAfterMainFocus = false
+            },
+            SIDEBAR_COLLAPSE_ARM_TIMEOUT_MS,
+        )
+    }
+
+    private fun clearPendingSidebarCollapseAfterMainFocus() {
+        pendingSidebarCollapseAfterMainFocus = false
+        pendingSidebarCollapseToken++
+    }
+
+    private fun maybeCollapseSidebarAfterMainFocusTransfer(newFocus: View) {
+        if (!pendingSidebarCollapseAfterMainFocus) return
+        clearPendingSidebarCollapseAfterMainFocus()
+        if (!BiliClient.prefs.mainAutoHideSidebarOnEnterContent) return
+        if (!isInMainContainer(newFocus)) return
+        setSidebarExpanded(expanded = false)
+    }
+
+    private fun setSidebarExpanded(expanded: Boolean) {
+        if (isSidebarExpanded == expanded) return
+        val mainLayoutParams = binding.mainContainer.layoutParams as? ConstraintLayout.LayoutParams ?: return
+        if (expanded) {
+            binding.sidebar.visibility = View.VISIBLE
+            mainLayoutParams.startToStart = ConstraintLayout.LayoutParams.UNSET
+            mainLayoutParams.startToEnd = R.id.sidebar
+        } else {
+            binding.sidebar.visibility = View.GONE
+            mainLayoutParams.startToEnd = ConstraintLayout.LayoutParams.UNSET
+            mainLayoutParams.startToStart = ConstraintLayout.LayoutParams.PARENT_ID
+        }
+        binding.mainContainer.layoutParams = mainLayoutParams
+        isSidebarExpanded = expanded
     }
 
     private fun focusSelectedTabInCurrentFragment(): Boolean {
@@ -1113,5 +1447,6 @@ class MainActivity : BaseActivity(), SidebarFocusHost {
     companion object {
         private const val STATE_KEY_ROOT_NAV_ID = "MainActivity.rootNavId"
         private const val BACK_DOUBLE_PRESS_WINDOW_MS = 1_500L
+        private const val SIDEBAR_COLLAPSE_ARM_TIMEOUT_MS = 1_000L
     }
 }
