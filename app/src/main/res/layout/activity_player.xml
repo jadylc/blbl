@@ -78,7 +78,7 @@
             android:layout_width="@dimen/player_buffering_indicator_size"
             android:layout_height="@dimen/player_buffering_indicator_size"
             android:indeterminate="true"
-            android:indeterminateTint="@color/blbl_text"
+            android:indeterminateTint="@color/player_text"
             android:indeterminateTintMode="src_in" />
 
         <TextView
@@ -89,7 +89,7 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:text="@string/player_loading"
-            android:textColor="@color/blbl_text"
+            android:textColor="@color/player_text"
             android:textSize="@dimen/player_buffering_text_size" />
     </LinearLayout>
 
@@ -139,7 +139,7 @@
                 android:layout_marginEnd="@dimen/player_title_margin_end"
                 android:ellipsize="end"
                 android:maxLines="1"
-                android:textColor="@color/blbl_text"
+                android:textColor="@color/player_text"
                 android:textSize="@dimen/player_title_text_size"
                 android:gravity="center_vertical" />
 
@@ -167,7 +167,7 @@
                         android:layout_height="@dimen/video_card_stat_icon_size"
                         android:contentDescription="@string/app_name"
                         android:src="@drawable/ic_player_watching"
-                        app:tint="@color/blbl_text_secondary" />
+                        app:tint="@color/player_text_secondary" />
 
                     <TextView
                         android:id="@+id/tv_online"
@@ -177,7 +177,7 @@
                         android:ellipsize="end"
                         android:maxLines="1"
                         android:text="-人正在观看"
-                        android:textColor="@color/blbl_text_secondary"
+                        android:textColor="@color/player_text_secondary"
                         android:textSize="@dimen/player_online_text_size" />
                 </LinearLayout>
 
@@ -195,7 +195,7 @@
                         android:layout_height="@dimen/video_card_stat_icon_size"
                         android:contentDescription="@string/app_name"
                         android:src="@drawable/ic_stat_play"
-                        app:tint="@color/blbl_text_secondary" />
+                        app:tint="@color/player_text_secondary" />
 
                     <TextView
                         android:id="@+id/tv_view_count"
@@ -205,7 +205,7 @@
                         android:ellipsize="end"
                         android:maxLines="1"
                         android:text="-"
-                        android:textColor="@color/blbl_text_secondary"
+                        android:textColor="@color/player_text_secondary"
                         android:textSize="@dimen/player_online_text_size" />
                 </LinearLayout>
 
@@ -216,7 +216,7 @@
                     android:layout_marginStart="10dp"
                     android:ellipsize="end"
                     android:maxLines="1"
-                    android:textColor="@color/blbl_text_secondary"
+                    android:textColor="@color/player_text_secondary"
                     android:textSize="@dimen/player_online_text_size" />
             </LinearLayout>
         </LinearLayout>
@@ -233,7 +233,7 @@
             android:shadowDx="0"
             android:shadowDy="2"
             android:shadowRadius="4"
-            android:textColor="@color/blbl_text"
+            android:textColor="@color/player_text"
             android:textSize="@dimen/player_clock_text_size"
             android:textStyle="bold"
             app:layout_constraintBottom_toBottomOf="@id/btn_back"
@@ -310,7 +310,7 @@
                 android:ellipsize="end"
                 android:maxLines="1"
                 android:maxWidth="@dimen/player_up_quick_name_max_width"
-                android:textColor="@color/blbl_text"
+                android:textColor="@color/player_text"
                 android:textSize="@dimen/player_up_quick_name_text_size"
                 android:textStyle="bold" />
         </LinearLayout>
@@ -333,7 +333,7 @@
             android:paddingEnd="@dimen/player_up_quick_follow_padding_end"
             android:stateListAnimator="@animator/blbl_focus_scale"
             android:text="@string/player_up_quick_follow"
-            android:textColor="@color/blbl_text"
+            android:textColor="@color/player_text"
             android:textSize="@dimen/player_up_quick_follow_text_size" />
     </LinearLayout>
 
@@ -574,7 +574,7 @@
             android:layout_marginEnd="@dimen/player_time_margin_end"
             android:ellipsize="end"
             android:maxLines="1"
-            android:textColor="@color/blbl_text"
+            android:textColor="@color/player_text"
             android:textSize="@dimen/player_time_text_size"
             app:layout_constraintBottom_toBottomOf="@id/controls_row"
             app:layout_constraintEnd_toEndOf="parent"
@@ -642,7 +642,7 @@
             android:layout_marginBottom="@dimen/player_seek_osd_margin_bottom"
             android:ellipsize="end"
             android:maxLines="1"
-            android:textColor="@color/blbl_text"
+            android:textColor="@color/player_text"
             android:textSize="@dimen/player_time_text_size"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
@@ -679,7 +679,7 @@
         android:layout_marginEnd="10dp"
         android:background="@color/player_overlay_bg"
         android:padding="10dp"
-        android:textColor="@color/blbl_text"
+        android:textColor="@color/player_text"
         android:textSize="13sp"
         android:visibility="gone"
         app:layout_constraintEnd_toEndOf="@id/player_view"
@@ -698,7 +698,7 @@
         android:maxWidth="@dimen/player_seek_hint_max_width"
         android:paddingHorizontal="@dimen/player_seek_hint_padding_h"
         android:paddingVertical="@dimen/player_seek_hint_padding_v"
-        android:textColor="@color/blbl_text"
+        android:textColor="@color/player_text"
         android:textSize="@dimen/player_seek_hint_text_size"
         android:visibility="gone"
         app:layout_constraintBottom_toTopOf="@id/barrier_player_bottom_overlay_top"
@@ -843,7 +843,7 @@
                     android:maxLines="2"
                     android:padding="16dp"
                     android:text="@string/player_list_empty"
-                    android:textColor="@color/blbl_text_secondary"
+                    android:textColor="@color/player_text_secondary"
                     android:textSize="14sp"
                     android:visibility="gone" />
 
@@ -919,7 +919,7 @@
                 android:ellipsize="end"
                 android:gravity="end"
                 android:maxLines="1"
-                android:textColor="@color/blbl_text"
+                android:textColor="@color/player_text"
                 android:textSize="16sp"
                 app:layout_constraintBottom_toBottomOf="@id/sponsor_submit_button_row"
                 app:layout_constraintEnd_toEndOf="parent"
@@ -1039,7 +1039,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginStart="@dimen/player_info_tab_gap"
                     android:text="@string/player_btn_comments"
-                    android:textColor="@color/blbl_text_secondary"
+                    android:textColor="@color/player_text_secondary"
                     android:textSize="@dimen/player_info_tab_text_size" />
             </LinearLayout>
 
@@ -1101,7 +1101,7 @@
                                 android:layout_height="wrap_content"
                                 android:ellipsize="end"
                                 android:maxLines="1"
-                                android:textColor="@color/blbl_text"
+                                android:textColor="@color/player_text"
                                 android:textSize="@dimen/player_info_up_name_text_size"
                                 android:textStyle="bold" />
 
@@ -1112,7 +1112,7 @@
                                 android:layout_marginTop="2dp"
                                 android:ellipsize="end"
                                 android:maxLines="1"
-                                android:textColor="@color/blbl_text_secondary"
+                                android:textColor="@color/player_text_secondary"
                                 android:textSize="@dimen/player_info_up_meta_text_size" />
                         </LinearLayout>
 
@@ -1126,7 +1126,7 @@
                             android:paddingStart="@dimen/player_info_follow_padding_h"
                             android:paddingEnd="@dimen/player_info_follow_padding_h"
                             android:text="@string/player_up_quick_follow"
-                            android:textColor="@color/blbl_text"
+                            android:textColor="@color/player_text"
                             android:textSize="@dimen/player_info_follow_text_size" />
                     </LinearLayout>
 
@@ -1137,7 +1137,7 @@
                         android:layout_marginTop="16dp"
                         android:ellipsize="end"
                         android:maxLines="2"
-                        android:textColor="@color/blbl_text"
+                        android:textColor="@color/player_text"
                         android:textSize="@dimen/player_info_title_text_size"
                         android:textStyle="bold" />
 
@@ -1148,7 +1148,7 @@
                         android:layout_marginTop="8dp"
                         android:ellipsize="end"
                         android:maxLines="1"
-                        android:textColor="@color/blbl_text_secondary"
+                        android:textColor="@color/player_text_secondary"
                         android:textSize="@dimen/player_info_stats_text_size" />
 
                     <TextView
@@ -1158,7 +1158,7 @@
                         android:layout_marginTop="10dp"
                         android:ellipsize="end"
                         android:maxLines="3"
-                        android:textColor="@color/blbl_text_secondary"
+                        android:textColor="@color/player_text_secondary"
                         android:textSize="@dimen/player_info_desc_text_size" />
 
                     <LinearLayout
@@ -1194,7 +1194,7 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="8dp"
-                                android:textColor="@color/blbl_text"
+                                android:textColor="@color/player_text"
                                 android:textSize="@dimen/player_info_action_text_size" />
                         </LinearLayout>
 
@@ -1223,7 +1223,7 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="8dp"
-                                android:textColor="@color/blbl_text"
+                                android:textColor="@color/player_text"
                                 android:textSize="@dimen/player_info_action_text_size" />
                         </LinearLayout>
 
@@ -1252,7 +1252,7 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="8dp"
-                                android:textColor="@color/blbl_text"
+                                android:textColor="@color/player_text"
                                 android:textSize="@dimen/player_info_action_text_size" />
                         </LinearLayout>
                     </LinearLayout>
@@ -1263,7 +1263,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="18dp"
                         android:text="@string/player_list_tab_parts"
-                        android:textColor="@color/blbl_text"
+                        android:textColor="@color/player_text"
                         android:textSize="@dimen/player_info_section_title_text_size"
                         android:textStyle="bold" />
 
@@ -1284,7 +1284,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:text="@string/player_list_empty"
-                        android:textColor="@color/blbl_text_secondary"
+                        android:textColor="@color/player_text_secondary"
                         android:textSize="@dimen/player_info_desc_text_size"
                         android:visibility="gone" />
 
@@ -1294,7 +1294,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="18dp"
                         android:text="@string/player_list_tab_recommend"
-                        android:textColor="@color/blbl_text"
+                        android:textColor="@color/player_text"
                         android:textSize="@dimen/player_info_section_title_text_size"
                         android:textStyle="bold" />
 
@@ -1315,7 +1315,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
                         android:text="@string/player_info_recommend_empty"
-                        android:textColor="@color/blbl_text_secondary"
+                        android:textColor="@color/player_text_secondary"
                         android:textSize="@dimen/player_info_desc_text_size"
                         android:visibility="gone" />
                 </LinearLayout>
@@ -1406,7 +1406,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/player_comment_sort"
-                    android:textColor="@color/blbl_text_secondary"
+                    android:textColor="@color/player_text_secondary"
                     android:textSize="@dimen/player_comment_sort_label_text_size" />
 
                 <TextView
@@ -1423,7 +1423,7 @@
                     android:paddingVertical="@dimen/player_comment_sort_chip_padding_v"
                     android:stateListAnimator="@animator/blbl_focus_scale"
                     android:text="@string/player_comment_sort_hot"
-                    android:textColor="@color/blbl_text"
+                    android:textColor="@color/player_text"
                     android:textSize="@dimen/player_comment_sort_chip_text_size" />
 
                 <TextView
@@ -1441,7 +1441,7 @@
                     android:paddingVertical="@dimen/player_comment_sort_chip_padding_v"
                     android:stateListAnimator="@animator/blbl_focus_scale"
                     android:text="@string/player_comment_sort_new"
-                    android:textColor="@color/blbl_text"
+                    android:textColor="@color/player_text"
                     android:textSize="@dimen/player_comment_sort_chip_text_size" />
             </LinearLayout>
 
@@ -1487,7 +1487,7 @@
                     android:gravity="center"
                     android:padding="@dimen/player_comments_hint_padding"
                     android:text="@string/player_comment_loading"
-                    android:textColor="@color/blbl_text_secondary"
+                    android:textColor="@color/player_text_secondary"
                     android:textSize="@dimen/player_comments_hint_text_size"
                     android:visibility="gone" />
 

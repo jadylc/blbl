@@ -48,6 +48,8 @@
     <color name="blbl_accent_blue_weak">#6600A1D6</color>
     <color name="blbl_accent_blue_pressed">#8000A1D6</color>
     <color name="player_button_tint">#FFFFFF</color>
+    <color name="player_text">#EDEDED</color>
+    <color name="player_text_secondary">#B3B3B3</color>
     <color name="blbl_purple">#8A2BE2</color>
     <color name="blbl_blue">#00A1D6</color>
     <color name="player_comment_thread_root_bg">#2600A1D6</color>
