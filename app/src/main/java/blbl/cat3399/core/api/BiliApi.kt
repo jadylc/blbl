@@ -1,5 +1,19 @@
 package blbl.cat3399.core.api
 
+import blbl.cat3399.core.api.video.VideoApiGateway
+import blbl.cat3399.core.api.video.VideoCollectionSectionsPage
+import blbl.cat3399.core.api.video.VideoCollectionSectionsRequest
+import blbl.cat3399.core.api.video.VideoDetail
+import blbl.cat3399.core.api.video.VideoDetailRequest
+import blbl.cat3399.core.api.video.VideoOnlineStatus
+import blbl.cat3399.core.api.video.VideoOnlineStatusRequest
+import blbl.cat3399.core.api.video.VideoPlayerInfo
+import blbl.cat3399.core.api.video.VideoPlayerInfoRequest
+import blbl.cat3399.core.api.video.VideoPlayRequest
+import blbl.cat3399.core.api.video.VideoPlayStream
+import blbl.cat3399.core.api.video.VideoShotRequest
+import blbl.cat3399.core.api.video.UgcSeasonArchivesPage
+import blbl.cat3399.core.api.video.UgcSeasonArchivesRequest
 import blbl.cat3399.core.log.AppLog
 import blbl.cat3399.core.model.BangumiEpisode
 import blbl.cat3399.core.model.BangumiEpisodeSection
@@ -417,6 +431,8 @@ object BiliApi {
 
     suspend fun liveDanmuInfo(roomId: Long): LiveDanmuInfo = LiveApi.liveDanmuInfo(roomId = roomId)
 
+    suspend fun liveRoomEntryAction(roomId: Long) = LiveApi.liveRoomEntryAction(roomId = roomId)
+
     suspend fun historyCursor(
         max: Long = 0,
         business: String? = null,
@@ -528,7 +544,74 @@ object BiliApi {
         aid: Long? = null,
     ) = VideoApi.toViewAdd(bvid = bvid, aid = aid)
 
+    suspend fun toViewDelete(aid: Long) = VideoApi.toViewDelete(aid = aid)
+
+    suspend fun historyDelete(kid: String) = VideoApi.historyDelete(kid = kid)
+
+    suspend fun videoFeedbackDislike(card: VideoCard) = VideoApi.feedbackDislike(card = card)
+
+    suspend fun favResourceDelete(
+        aid: Long,
+        mediaId: Long,
+    ) = VideoApi.favResourceDeal(rid = aid, addMediaIds = emptyList(), delMediaIds = listOf(mediaId))
+
     suspend fun spaceLikeVideoList(vmid: Long): List<VideoCard> = VideoApi.spaceLikeVideoList(vmid = vmid)
+
+    suspend fun videoDetail(bvid: String): VideoDetail =
+        VideoApiGateway.detail(VideoDetailRequest(bvid = bvid))
+
+    suspend fun playUrl(request: VideoPlayRequest): VideoPlayStream = VideoApiGateway.playUrl(request)
+
+    suspend fun videoPlayerInfo(bvid: String, cid: Long): VideoPlayerInfo =
+        VideoApiGateway.playerInfo(VideoPlayerInfoRequest(bvid = bvid, cid = cid))
+
+    suspend fun videoOnlineStatus(bvid: String, cid: Long): VideoOnlineStatus =
+        VideoApiGateway.onlineStatus(VideoOnlineStatusRequest(bvid = bvid, cid = cid))
+
+    suspend fun videoShot(
+        aid: Long? = null,
+        bvid: String? = null,
+        cid: Long? = null,
+        needJsonArrayIndex: Boolean = false,
+    ): blbl.cat3399.core.api.video.VideoShotInfo =
+        VideoApiGateway.videoShot(
+            VideoShotRequest(
+                aid = aid,
+                bvid = bvid,
+                cid = cid,
+                needJsonArrayIndex = needJsonArrayIndex,
+            ),
+        )
+
+    suspend fun ugcSeasonArchives(
+        mid: Long,
+        seasonId: Long,
+        pageNum: Int = 1,
+        pageSize: Int = 200,
+        sortReverse: Boolean = false,
+    ): UgcSeasonArchivesPage =
+        VideoApiGateway.ugcSeasonArchives(
+            UgcSeasonArchivesRequest(
+                mid = mid,
+                seasonId = seasonId,
+                pageNum = pageNum,
+                pageSize = pageSize,
+                sortReverse = sortReverse,
+            ),
+        )
+
+    suspend fun collectionSections(
+        mid: Long,
+        pageNum: Int = 1,
+        pageSize: Int = 20,
+    ): VideoCollectionSectionsPage =
+        VideoApiGateway.collectionSections(
+            VideoCollectionSectionsRequest(
+                mid = mid,
+                pageNum = pageNum,
+                pageSize = pageSize,
+            ),
+        )
 
     private suspend fun favFolderInfo(mediaId: Long): FavFolder? {
         val url = BiliClient.withQuery(
