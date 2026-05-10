@@ -90,7 +90,9 @@
     </style>
 
     <!-- Player OSD sizing overlay: baseline values (scaled at runtime by userScale + autoScale). -->
-    <style name="ThemeOverlay.Blbl.PlayerOsd.Normal">
+    <style name="ThemeOverlay_Blbl_PlayerOsd_Base" />
+
+    <style name="ThemeOverlay.Blbl.PlayerOsd.Normal" parent="@style/ThemeOverlay_Blbl_PlayerOsd_Base">
         <item name="playerOsdButtonTargetSize">@dimen/player_osd_button_target_size</item>
         <item name="playerOsdPadTransport">@dimen/player_osd_pad_transport</item>
         <item name="playerOsdPadNormal">@dimen/player_osd_pad_normal</item>
