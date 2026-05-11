@@ -448,8 +448,7 @@ internal fun PlayerActivity.smartSeek(direction: Int, showControls: Boolean, hin
     }
 
     val baseStep = smartSeekStepMs()
-    val multiplier = 1L shl (smartSeekStreak - 1).coerceAtMost(30)
-    val step = baseStep * multiplier
+    val step = baseStep * smartSeekStreak.toLong()
     val engine = player ?: return
     val duration = engine.duration.takeIf { it > 0 } ?: currentViewDurationMs
     if (duration == null || duration <= 0L) {
@@ -518,7 +517,16 @@ internal fun PlayerActivity.startHoldSeek(direction: Int, showControls: Boolean)
     showSeekHoldHint(direction, holdSpeed)
     engine.setPlaybackSpeed(holdSpeed)
     engine.playWhenReady = true
-    holdSeekJob = lifecycleScope.launch { kotlinx.coroutines.awaitCancellation() }
+    holdSeekJob =
+        lifecycleScope.launch {
+            var speed = holdSpeed
+            while (isActive) {
+                delay(PlayerActivity.HOLD_SEEK_SPEED_RAMP_INTERVAL_MS)
+                speed = (speed + PlayerActivity.HOLD_SEEK_SPEED_RAMP_STEP).coerceAtMost(PlayerActivity.HOLD_SEEK_SPEED_MAX)
+                engine.setPlaybackSpeed(speed)
+                showSeekHoldHint(direction, speed)
+            }
+        }
 }
 
 internal fun PlayerActivity.startHoldScrub(direction: Int, showControls: Boolean) {

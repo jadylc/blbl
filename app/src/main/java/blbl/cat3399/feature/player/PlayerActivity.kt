@@ -3528,6 +3528,9 @@ class PlayerActivity : BaseActivity() {
         internal const val SMART_SEEK_WINDOW_MS = 1_000L
         internal const val HOLD_SCRUB_TICK_MS = 40L
         internal const val HOLD_SCRUB_FIXED_STEP_BASE_TICK_MS = 120L
+        internal const val HOLD_SEEK_SPEED_RAMP_INTERVAL_MS = 1_000L
+        internal const val HOLD_SEEK_SPEED_RAMP_STEP = 1.0f
+        internal const val HOLD_SEEK_SPEED_MAX = 8.0f
         private const val BACK_DOUBLE_PRESS_WINDOW_MS = 2_500L
         internal const val TOUCH_LOCK_UI_HIDE_DELAY_MS = 2_500L
         internal const val TOUCH_GESTURE_EXCLUDED_EDGE_RATIO = 0.03f
