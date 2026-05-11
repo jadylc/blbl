@@ -221,6 +221,7 @@ class PlayerActivity : BaseActivity() {
 
     internal var smartSeekDirection: Int = 0
     internal var smartSeekLastAtMs: Long = 0L
+    internal var smartSeekStreak: Int = 0
     internal var smartSeekTotalMs: Long = 0L
     internal var tapSeekActiveDirection: Int = 0
     internal var tapSeekActiveUntilMs: Long = 0L
@@ -3524,7 +3525,7 @@ class PlayerActivity : BaseActivity() {
         internal const val AUTO_HIDE_MS = 4_000L
         internal const val EDGE_TAP_THRESHOLD = 0.4f
         private const val TAP_SEEK_ACTIVE_MS = 1_200L
-        internal const val SMART_SEEK_WINDOW_MS = 900L
+        internal const val SMART_SEEK_WINDOW_MS = 1_000L
         internal const val HOLD_SCRUB_TICK_MS = 40L
         internal const val HOLD_SCRUB_FIXED_STEP_BASE_TICK_MS = 120L
         private const val BACK_DOUBLE_PRESS_WINDOW_MS = 2_500L
